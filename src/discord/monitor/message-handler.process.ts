@@ -11,11 +11,8 @@ import {
 } from "../../auto-reply/reply/history.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
 import { createReplyDispatcherWithTyping } from "../../auto-reply/reply/reply-dispatcher.js";
-import {
-  removeAckReactionAfterReply,
-  shouldAckReaction as shouldAckReactionGate,
-} from "../../channels/ack-reactions.js";
-import { logTypingFailure, logAckFailure } from "../../channels/logging.js";
+import { shouldAckReaction as shouldAckReactionGate } from "../../channels/ack-reactions.js";
+import { logTypingFailure } from "../../channels/logging.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { recordInboundSession } from "../../channels/session.js";
 import { createTypingCallbacks } from "../../channels/typing.js";
@@ -34,6 +31,7 @@ import {
   resolveDiscordMessageText,
   resolveMediaList,
 } from "./message-utils.js";
+import { createDiscordReactionStatusMachine } from "./reaction-status-machine.js";
 import { buildDirectLabel, buildGuildLabel, resolveReplyContext } from "./reply-context.js";
 import { deliverDiscordReply } from "./reply-delivery.js";
 import { resolveDiscordAutoThreadReplyPlan, resolveDiscordThreadStarter } from "./threading.js";
@@ -93,32 +91,39 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     channel: "discord",
     accountId,
   });
-  const removeAckAfterReply = cfg.messages?.removeAckAfterReply ?? false;
-  const shouldAckReaction = () =>
-    Boolean(
-      ackReaction &&
-      shouldAckReactionGate({
-        scope: ackReactionScope,
-        isDirect: isDirectMessage,
-        isGroup: isGuildMessage || isGroupDm,
-        isMentionableGroup: isGuildMessage,
-        requireMention: Boolean(shouldRequireMention),
-        canDetectMention,
-        effectiveWasMentioned,
-        shouldBypassMention,
-      }),
-    );
-  const ackReactionPromise = shouldAckReaction()
-    ? reactMessageDiscord(messageChannelId, message.id, ackReaction, {
-        rest: client.rest,
-      }).then(
-        () => true,
-        (err) => {
-          logVerbose(`discord react failed for channel ${messageChannelId}: ${String(err)}`);
-          return false;
+  const ackEnabled = Boolean(
+    ackReaction &&
+    shouldAckReactionGate({
+      scope: ackReactionScope,
+      isDirect: isDirectMessage,
+      isGroup: isGuildMessage || isGroupDm,
+      isMentionableGroup: isGuildMessage,
+      requireMention: Boolean(shouldRequireMention),
+      canDetectMention,
+      effectiveWasMentioned,
+      shouldBypassMention,
+    }),
+  );
+
+  const reactionStatus = ackEnabled
+    ? createDiscordReactionStatusMachine({
+        setReaction: async (emoji) => {
+          await reactMessageDiscord(messageChannelId, message.id, emoji, {
+            rest: client.rest,
+          });
         },
-      )
+        clearReaction: async (emoji) => {
+          await removeReactionDiscord(messageChannelId, message.id, emoji, {
+            rest: client.rest,
+          });
+        },
+        onError: (message) => {
+          logVerbose(message);
+        },
+      })
     : null;
+
+  await reactionStatus?.start();
 
   const fromLabel = isDirectMessage
     ? buildDirectLabel(author)
@@ -359,10 +364,27 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     accountId,
   });
 
+  const typingOnReplyStart = createTypingCallbacks({
+    start: () => sendTyping({ client, channelId: typingChannelId }),
+    onStartError: (err) => {
+      logTypingFailure({
+        log: logVerbose,
+        channel: "discord",
+        target: typingChannelId,
+        error: err,
+      });
+    },
+  }).onReplyStart;
+
   const { dispatcher, replyOptions, markDispatchIdle } = createReplyDispatcherWithTyping({
     ...prefixOptions,
     humanDelay: resolveHumanDelayConfig(cfg, route.agentId),
-    deliver: async (payload: ReplyPayload) => {
+    deliver: async (payload: ReplyPayload, info) => {
+      if (info.kind === "tool") {
+        reactionStatus?.tool(payload.text);
+      } else {
+        reactionStatus?.thinking();
+      }
       const replyToId = replyReference.use();
       await deliverDiscordReply({
         replies: [payload],
@@ -377,40 +399,58 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
         tableMode,
         chunkMode: resolveChunkMode(cfg, "discord", accountId),
       });
+      if (info.kind === "final") {
+        await reactionStatus?.succeed();
+      }
       replyReference.markSent();
     },
     onError: (err, info) => {
       runtime.error?.(danger(`discord ${info.kind} reply failed: ${String(err)}`));
+      void reactionStatus?.fail();
     },
-    onReplyStart: createTypingCallbacks({
-      start: () => sendTyping({ client, channelId: typingChannelId }),
-      onStartError: (err) => {
-        logTypingFailure({
-          log: logVerbose,
-          channel: "discord",
-          target: typingChannelId,
-          error: err,
-        });
-      },
-    }).onReplyStart,
+    onReplyStart: async () => {
+      reactionStatus?.thinking();
+      await typingOnReplyStart?.();
+    },
   });
 
-  const { queuedFinal, counts } = await dispatchInboundMessage({
-    ctx: ctxPayload,
-    cfg,
-    dispatcher,
-    replyOptions: {
-      ...replyOptions,
-      skillFilter: channelConfig?.skills,
-      disableBlockStreaming:
-        typeof discordConfig?.blockStreaming === "boolean"
-          ? !discordConfig.blockStreaming
-          : undefined,
-      onModelSelected,
-    },
-  });
-  markDispatchIdle();
+  let queuedFinal = false;
+  let counts = { final: 0, tool: 0, block: 0 };
+  try {
+    const result = await dispatchInboundMessage({
+      ctx: ctxPayload,
+      cfg,
+      dispatcher,
+      replyOptions: {
+        ...replyOptions,
+        skillFilter: channelConfig?.skills,
+        disableBlockStreaming:
+          typeof discordConfig?.blockStreaming === "boolean"
+            ? !discordConfig.blockStreaming
+            : undefined,
+        onModelSelected,
+        onAssistantMessageStart: async () => {
+          reactionStatus?.thinking();
+        },
+        onReasoningStream: async () => {
+          reactionStatus?.thinking();
+        },
+        onPartialReply: async () => {
+          reactionStatus?.thinking();
+        },
+      },
+    });
+    queuedFinal = result.queuedFinal;
+    counts = result.counts;
+  } catch (err) {
+    await reactionStatus?.fail();
+    throw err;
+  } finally {
+    markDispatchIdle();
+  }
+
   if (!queuedFinal) {
+    await reactionStatus?.succeed();
     if (isGuildMessage) {
       clearHistoryEntriesIfEnabled({
         historyMap: guildHistories,
@@ -426,24 +466,9 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       `discord: delivered ${finalCount} reply${finalCount === 1 ? "" : "ies"} to ${replyTarget}`,
     );
   }
-  removeAckReactionAfterReply({
-    removeAfterReply: removeAckAfterReply,
-    ackReactionPromise,
-    ackReactionValue: ackReaction,
-    remove: async () => {
-      await removeReactionDiscord(messageChannelId, message.id, ackReaction, {
-        rest: client.rest,
-      });
-    },
-    onError: (err) => {
-      logAckFailure({
-        log: logVerbose,
-        channel: "discord",
-        target: `${messageChannelId}/${message.id}`,
-        error: err,
-      });
-    },
-  });
+
+  await reactionStatus?.succeed();
+
   if (isGuildMessage) {
     clearHistoryEntriesIfEnabled({
       historyMap: guildHistories,
