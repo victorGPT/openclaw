@@ -60,11 +60,18 @@ jobs:
             --jq '.[0].number')"
 
           if [ -z "$PR_NUMBER" ]; then
+            cat > /tmp/upstream-sync-pr-body.md <<EOF
+Automated daily upstream sync.
+
+- Source: openclaw/main
+- Mirror branch: main
+- Target: $BASE
+EOF
             gh pr create \
               --base "$BASE" \
               --head "$HEAD" \
               --title "chore(sync): merge upstream main into $BASE" \
-              --body "Automated daily upstream sync.\n\n- Source: openclaw/main\n- Mirror branch: main\n- Target: $BASE"
+              --body-file /tmp/upstream-sync-pr-body.md
           else
             gh pr comment "$PR_NUMBER" --body "Upstream sync updated main again. Please re-run CI and merge when green."
           fi
