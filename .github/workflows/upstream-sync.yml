@@ -1,9 +1,9 @@
 name: Upstream Sync
 
-"on":
+on:
   schedule:
     - cron: "17 2 * * *" # daily UTC 02:17 (Tokyo 11:17)
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Sync main with upstream/main (ff-only)
+      - name: Sync upstream-main with upstream/main (ff-only)
         id: sync
         run: |
           set -euo pipefail
@@ -27,30 +27,37 @@ jobs:
 
           git remote add upstream https://github.com/openclaw/openclaw.git || true
           git fetch upstream main
-          git checkout main
+          git fetch origin upstream-main || true
 
-          BEFORE="$(git rev-parse HEAD)"
-          git merge --ff-only upstream/main
+          if git show-ref --verify --quiet refs/remotes/origin/upstream-main; then
+            git checkout -B upstream-main origin/upstream-main
+            BEFORE="$(git rev-parse HEAD)"
+            git merge --ff-only upstream/main
+          else
+            git checkout -B upstream-main upstream/main
+            BEFORE=""
+          fi
+
           AFTER="$(git rev-parse HEAD)"
 
-          if [ "$BEFORE" = "$AFTER" ]; then
+          if [ -n "$BEFORE" ] && [ "$BEFORE" = "$AFTER" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Push synced main
+      - name: Push synced mirror branch
         if: steps.sync.outputs.changed == 'true'
-        run: git push origin main
+        run: git push origin upstream-main
 
-      - name: Create/refresh PR (main -> custom)
+      - name: Create/refresh PR (upstream-main -> custom)
         if: steps.sync.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           BASE="fix/discord-reaction-state-machine-only"
-          HEAD="main"
+          HEAD="upstream-main"
 
           PR_NUMBER="$(gh pr list \
             --base "$BASE" \
@@ -64,7 +71,7 @@ jobs:
 Automated daily upstream sync.
 
 - Source: openclaw/main
-- Mirror branch: main
+- Mirror branch: upstream-main
 - Target: $BASE
 EOF
             gh pr create \
@@ -73,5 +80,5 @@ EOF
               --title "chore(sync): merge upstream main into $BASE" \
               --body-file /tmp/upstream-sync-pr-body.md
           else
-            gh pr comment "$PR_NUMBER" --body "Upstream sync updated main again. Please re-run CI and merge when green."
+            gh pr comment "$PR_NUMBER" --body "Upstream sync updated upstream-main again. Please re-run CI and merge when green."
           fi
