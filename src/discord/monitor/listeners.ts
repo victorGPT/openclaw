@@ -321,10 +321,9 @@ async function handleDiscordReactionEvent(params: {
         return;
       }
 
-      // For "own" mode, we need to fetch the message to check the author
-      const messagePromise = data.message.fetch().catch(() => null);
-
-      const [channelInfo, message] = await Promise.all([channelInfoPromise, messagePromise]);
+      // For "own" mode, resolve allowlist/channel gates first, then fetch message author
+      // only when needed.
+      const channelInfo = await channelInfoPromise;
       parentId = channelInfo?.parentId;
 
       if (parentId) {
@@ -347,6 +346,7 @@ async function handleDiscordReactionEvent(params: {
         return;
       }
 
+      const message = await data.message.fetch().catch(() => null);
       const messageAuthorId = message?.author?.id ?? undefined;
       const shouldNotify = shouldEmitDiscordReactionNotification({
         mode: reactionMode,
