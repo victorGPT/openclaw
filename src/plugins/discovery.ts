@@ -295,6 +295,26 @@ function addCandidate(params: {
   });
 }
 
+function resolveDirentKind(entry: fs.Dirent, fullPath: string): {
+  isFile: boolean;
+  isDirectory: boolean;
+} {
+  let isFile = entry.isFile();
+  let isDirectory = entry.isDirectory();
+
+  if (!isFile && !isDirectory && entry.isSymbolicLink()) {
+    try {
+      const stats = fs.statSync(fullPath);
+      isFile = stats.isFile();
+      isDirectory = stats.isDirectory();
+    } catch {
+      // Broken symlink or inaccessible target; keep defaults.
+    }
+  }
+
+  return { isFile, isDirectory };
+}
+
 function resolvePackageEntrySource(params: {
   packageDir: string;
   entryPath: string;
@@ -343,7 +363,9 @@ function discoverInDirectory(params: {
 
   for (const entry of entries) {
     const fullPath = path.join(params.dir, entry.name);
-    if (entry.isFile()) {
+    const kind = resolveDirentKind(entry, fullPath);
+
+    if (kind.isFile) {
       if (!isExtensionFile(fullPath)) {
         continue;
       }
@@ -359,7 +381,7 @@ function discoverInDirectory(params: {
         workspaceDir: params.workspaceDir,
       });
     }
-    if (!entry.isDirectory()) {
+    if (!kind.isDirectory) {
       continue;
     }
 
