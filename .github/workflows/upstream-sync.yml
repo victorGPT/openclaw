@@ -67,13 +67,13 @@ jobs:
             --jq '.[0].number')"
 
           if [ -z "$PR_NUMBER" ]; then
-            cat > /tmp/upstream-sync-pr-body.md <<EOF
-Automated daily upstream sync.
-
-- Source: openclaw/main
-- Mirror branch: upstream-main
-- Target: $BASE
-EOF
+            {
+              echo "Automated daily upstream sync."
+              echo
+              echo "- Source: openclaw/main"
+              echo "- Mirror branch: upstream-main"
+              echo "- Target: $BASE"
+            } > /tmp/upstream-sync-pr-body.md
             gh pr create \
               --base "$BASE" \
               --head "$HEAD" \
