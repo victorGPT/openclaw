@@ -42,8 +42,6 @@ export {
   buildMentionedCardContent,
   type MentionTarget,
 } from "./src/mention.js";
-export { feishuPlugin } from "./src/channel.js";
-
 const plugin = {
   id: "feishu",
   name: "Feishu",
