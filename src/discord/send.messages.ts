@@ -1,6 +1,5 @@
 import type { APIChannel, APIMessage } from "discord-api-types/v10";
 import { ChannelType, Routes } from "discord-api-types/v10";
-import { resolveDiscordRest } from "./send.shared.js";
 import type {
   DiscordMessageEdit,
   DiscordMessageQuery,
@@ -9,6 +8,7 @@ import type {
   DiscordThreadCreate,
   DiscordThreadList,
 } from "./send.types.js";
+import { resolveDiscordRest } from "./send.shared.js";
 
 export async function readMessagesDiscord(
   channelId: string,
@@ -134,17 +134,7 @@ export async function createThreadDiscord(
   const route = payload.messageId
     ? Routes.threads(channelId, payload.messageId)
     : Routes.threads(channelId);
-  const thread = (await rest.post(route, { body })) as { id: string };
-
-  // For non-forum channels, send the initial message separately after thread creation.
-  // Forum channels handle this via the `message` field in the request body.
-  if (!isForumLike && payload.content?.trim()) {
-    await rest.post(Routes.channelMessages(thread.id), {
-      body: { content: payload.content },
-    });
-  }
-
-  return thread;
+  return await rest.post(route, { body });
 }
 
 export async function listThreadsDiscord(payload: DiscordThreadList, opts: DiscordReactOpts = {}) {

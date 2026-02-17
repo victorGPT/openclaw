@@ -38,22 +38,6 @@ const makeEntries = (
   return out;
 };
 
-function createAutoThreadMentionContext() {
-  const guildInfo: DiscordGuildEntryResolved = {
-    requireMention: true,
-    channels: {
-      general: { allow: true, autoThread: true },
-    },
-  };
-  const channelConfig = resolveDiscordChannelConfig({
-    guildInfo,
-    channelId: "1",
-    channelName: "General",
-    channelSlug: "general",
-  });
-  return { guildInfo, channelConfig };
-}
-
 describe("registerDiscordListener", () => {
   class FakeListener {}
 
@@ -87,10 +71,7 @@ describe("DiscordMessageListener", () => {
     expect(handler).toHaveBeenCalledOnce();
     expect(handlerResolved).toBe(false);
 
-    const release = resolveHandler;
-    if (typeof release === "function") {
-      (release as () => void)();
-    }
+    resolveHandler?.();
     await handlerPromise;
   });
 
@@ -135,18 +116,13 @@ describe("DiscordMessageListener", () => {
       );
 
       vi.setSystemTime(31_000);
-      const release = resolveHandler;
-      if (typeof release === "function") {
-        (release as () => void)();
-      }
+      resolveHandler?.();
       await handlerPromise;
       await Promise.resolve();
 
       expect(logger.warn).toHaveBeenCalled();
-      const warnMock = logger.warn as unknown as { mock: { calls: unknown[][] } };
-      const [, meta] = warnMock.mock.calls[0] ?? [];
-      const durationMs = (meta as { durationMs?: number } | undefined)?.durationMs;
-      expect(durationMs).toBeGreaterThanOrEqual(30_000);
+      const [, meta] = logger.warn.mock.calls[0] ?? [];
+      expect(meta?.durationMs).toBeGreaterThanOrEqual(30_000);
     } finally {
       vi.useRealTimers();
     }
@@ -426,7 +402,18 @@ describe("discord mention gating", () => {
   });
 
   it("does not require mention inside autoThread threads", () => {
-    const { guildInfo, channelConfig } = createAutoThreadMentionContext();
+    const guildInfo: DiscordGuildEntryResolved = {
+      requireMention: true,
+      channels: {
+        general: { allow: true, autoThread: true },
+      },
+    };
+    const channelConfig = resolveDiscordChannelConfig({
+      guildInfo,
+      channelId: "1",
+      channelName: "General",
+      channelSlug: "general",
+    });
     expect(
       resolveDiscordShouldRequireMention({
         isGuildMessage: true,
@@ -440,7 +427,18 @@ describe("discord mention gating", () => {
   });
 
   it("requires mention inside user-created threads with autoThread enabled", () => {
-    const { guildInfo, channelConfig } = createAutoThreadMentionContext();
+    const guildInfo: DiscordGuildEntryResolved = {
+      requireMention: true,
+      channels: {
+        general: { allow: true, autoThread: true },
+      },
+    };
+    const channelConfig = resolveDiscordChannelConfig({
+      guildInfo,
+      channelId: "1",
+      channelName: "General",
+      channelSlug: "general",
+    });
     expect(
       resolveDiscordShouldRequireMention({
         isGuildMessage: true,
@@ -454,7 +452,18 @@ describe("discord mention gating", () => {
   });
 
   it("requires mention when thread owner is unknown", () => {
-    const { guildInfo, channelConfig } = createAutoThreadMentionContext();
+    const guildInfo: DiscordGuildEntryResolved = {
+      requireMention: true,
+      channels: {
+        general: { allow: true, autoThread: true },
+      },
+    };
+    const channelConfig = resolveDiscordChannelConfig({
+      guildInfo,
+      channelId: "1",
+      channelName: "General",
+      channelSlug: "general",
+    });
     expect(
       resolveDiscordShouldRequireMention({
         isGuildMessage: true,
@@ -759,12 +768,11 @@ describe("discord media payload", () => {
 
 const { enqueueSystemEventSpy, resolveAgentRouteMock } = vi.hoisted(() => ({
   enqueueSystemEventSpy: vi.fn(),
-  resolveAgentRouteMock: vi.fn((params: unknown) => ({
+  resolveAgentRouteMock: vi.fn(() => ({
     agentId: "default",
     channel: "discord",
     accountId: "acc-1",
     sessionKey: "discord:acc-1:dm:user-1",
-    ...(typeof params === "object" && params !== null ? { _params: params } : {}),
   })),
 }));
 
@@ -944,12 +952,7 @@ describe("discord DM reaction handling", () => {
     await listener.handle(data, client);
 
     expect(resolveAgentRouteMock).toHaveBeenCalledOnce();
-    const routeArgs = (resolveAgentRouteMock.mock.calls[0]?.[0] ?? {}) as {
-      peer?: unknown;
-    };
-    if (!routeArgs) {
-      throw new Error("expected route arguments");
-    }
+    const routeArgs = resolveAgentRouteMock.mock.calls[0][0];
     expect(routeArgs.peer).toEqual({ kind: "direct", id: "user-42" });
   });
 
@@ -964,12 +967,7 @@ describe("discord DM reaction handling", () => {
     await listener.handle(data, client);
 
     expect(resolveAgentRouteMock).toHaveBeenCalledOnce();
-    const routeArgs = (resolveAgentRouteMock.mock.calls[0]?.[0] ?? {}) as {
-      peer?: unknown;
-    };
-    if (!routeArgs) {
-      throw new Error("expected route arguments");
-    }
+    const routeArgs = resolveAgentRouteMock.mock.calls[0][0];
     expect(routeArgs.peer).toEqual({ kind: "group", id: "channel-1" });
   });
 });
