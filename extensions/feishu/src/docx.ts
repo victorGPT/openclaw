@@ -439,6 +439,49 @@ async function listAppScopes(client: Lark.Client) {
   };
 }
 
+async function listComments(
+  client: Lark.Client,
+  docToken: string,
+  pageSize?: number,
+  pageToken?: string,
+) {
+  const res = await client.request({
+    method: "GET",
+    url: `/open-apis/drive/v1/files/${docToken}/comments`,
+    params: {
+      file_type: "docx",
+      page_size: pageSize ?? 20,
+      ...(pageToken ? { page_token: pageToken } : {}),
+    },
+  });
+
+  if (res.code !== 0) throw new Error(res.msg);
+
+  return {
+    comments: res.data?.items ?? [],
+    page_token: res.data?.page_token,
+    has_more: res.data?.has_more ?? false,
+  };
+}
+
+async function getComment(client: Lark.Client, docToken: string, commentId: string) {
+  const res = await client.request({
+    method: "POST",
+    url: `/open-apis/drive/v1/files/${docToken}/comments/batch_query`,
+    params: { file_type: "docx" },
+    data: { comment_ids: [commentId] },
+  });
+
+  if (res.code !== 0) throw new Error(res.msg);
+
+  const comments = res.data?.items ?? [];
+  if (comments.length === 0) {
+    throw new Error(`Comment ${commentId} not found`);
+  }
+
+  return { comment: comments[0] };
+}
+
 // ============ Tool Registration ============
 
 export function registerFeishuDocTools(api: OpenClawPluginApi) {
@@ -470,7 +513,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
         name: "feishu_doc",
         label: "Feishu Doc",
         description:
-          "Feishu document operations. Actions: read, write, append, create, list_blocks, get_block, update_block, delete_block",
+          'Feishu document operations. Actions: read, write, append, create, list_blocks, get_block, update_block, delete_block, list_comments, get_comment. Use "list_comments" and "get_comment" to retrieve document comments.',
         parameters: FeishuDocSchema,
         async execute(_toolCallId, params) {
           const p = params as FeishuDocParams;
@@ -493,6 +536,10 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
                 return json(await updateBlock(client, p.doc_token, p.block_id, p.content));
               case "delete_block":
                 return json(await deleteBlock(client, p.doc_token, p.block_id));
+              case "list_comments":
+                return json(await listComments(client, p.doc_token, p.page_size, p.page_token));
+              case "get_comment":
+                return json(await getComment(client, p.doc_token, p.comment_id));
               default:
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- exhaustive check fallback
                 return json({ error: `Unknown action: ${(p as any).action}` });
