@@ -1,84 +1,118 @@
-name: Upstream Sync
+name: Daily Upstream Sync
 
 on:
   schedule:
-    - cron: "17 2 * * *" # daily UTC 02:17 (Tokyo 11:17)
+    # 每天早上 8:00 UTC
+    - cron: '0 8 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
+env:
+  UPSTREAM_REPO: openclaw/openclaw
+  UPSTREAM_BRANCH: main
+  TARGET_BRANCH: upstream-main
 
 jobs:
-  sync-and-pr:
+  sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout fork
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync upstream-main with upstream/main (ff-only)
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git || true
+          git fetch upstream
+
+      - name: Check if target branch exists
+        id: check-branch
+        run: |
+          if git show-ref --verify --quiet refs/remotes/origin/${{ env.TARGET_BRANCH }}; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create or update target branch
         id: sync
         run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git remote add upstream https://github.com/openclaw/openclaw.git || true
-          git fetch upstream main
-          git fetch origin upstream-main || true
-
-          if git show-ref --verify --quiet refs/remotes/origin/upstream-main; then
-            git checkout -B upstream-main origin/upstream-main
-            BEFORE="$(git rev-parse HEAD)"
-            git merge --ff-only upstream/main
+          if [ "${{ steps.check-branch.outputs.exists }}" == "false" ]; then
+            git checkout -b ${{ env.TARGET_BRANCH }} upstream/${{ env.UPSTREAM_BRANCH }}
+            git push origin ${{ env.TARGET_BRANCH }}
+            echo "status=created" >> $GITHUB_OUTPUT
+            echo "message=首次创建 ${{ env.TARGET_BRANCH }} 分支" >> $GITHUB_OUTPUT
           else
-            git checkout -B upstream-main upstream/main
-            BEFORE=""
+            git checkout ${{ env.TARGET_BRANCH }}
+            LOCAL_COMMIT=$(git rev-parse HEAD)
+            UPSTREAM_COMMIT=$(git rev-parse upstream/${{ env.UPSTREAM_BRANCH }})
+            
+            if [ "$LOCAL_COMMIT" == "$UPSTREAM_COMMIT" ]; then
+              echo "status=up-to-date" >> $GITHUB_OUTPUT
+              echo "message=无需更新，已是最新" >> $GITHUB_OUTPUT
+            else
+              git merge --no-commit --no-ff upstream/${{ env.UPSTREAM_BRANCH }} || MERGE_FAILED=true
+              
+              if [ "$MERGE_FAILED" == "true" ]; then
+                git merge --abort 2>/dev/null || true
+                echo "status=conflict" >> $GITHUB_OUTPUT
+                echo "message=同步失败：存在冲突需要手动解决" >> $GITHUB_OUTPUT
+                exit 1
+              else
+                git merge --abort 2>/dev/null || true
+                git reset --hard upstream/${{ env.UPSTREAM_BRANCH }}
+                git push origin ${{ env.TARGET_BRANCH }} --force-with-lease
+                
+                COMMITS_BEHIND=$(git rev-list --count HEAD..upstream/${{ env.UPSTREAM_BRANCH }} 2>/dev/null || echo "0")
+                COMMIT_MSG=$(git log -1 --pretty=format:"%s" upstream/${{ env.UPSTREAM_BRANCH }})
+                echo "status=updated" >> $GITHUB_OUTPUT
+                echo "message=已同步 ${{ env.UPSTREAM_REPO }}@${{ env.UPSTREAM_BRANCH }}" >> $GITHUB_OUTPUT
+                echo "commits=$COMMITS_BEHIND" >> $GITHUB_OUTPUT
+                echo "commit_msg=$COMMIT_MSG" >> $GITHUB_OUTPUT
+              fi
+            fi
           fi
 
-          AFTER="$(git rev-parse HEAD)"
-
-          if [ -n "$BEFORE" ] && [ "$BEFORE" = "$AFTER" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Push synced mirror branch
-        if: steps.sync.outputs.changed == 'true'
-        run: git push origin upstream-main
-
-      - name: Create/refresh PR (upstream-main -> custom)
-        if: steps.sync.outputs.changed == 'true'
+      - name: Notify Discord - Success
+        if: success() && steps.sync.outputs.status != ''
+        uses: Ilshidur/action-discord@master
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          BASE="fix/discord-reaction-state-machine-only"
-          HEAD="upstream-main"
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_UPSTREAM_SYNC_WEBHOOK }}
+        with:
+          args: |
+            🔄 **上游同步报告**
+            
+            📋 状态: ${{ steps.sync.outputs.status == 'created' && '🆕 首次创建' || steps.sync.outputs.status == 'up-to-date' && '✅ 已是最新' || steps.sync.outputs.status == 'updated' && '📥 已更新' || steps.sync.outputs.status }}
+            
+            📝 ${{ steps.sync.outputs.message }}
+            ${{ steps.sync.outputs.commits && format('📊 落后提交数: {0}', steps.sync.outputs.commits) || '' }}
+            ${{ steps.sync.outputs.commit_msg && format('💬 最新提交: {0}', steps.sync.outputs.commit_msg) || '' }}
+            
+            🔗 分支: `${{ env.TARGET_BRANCH }}`
+            ⏰ 时间: ${{ github.event.schedule || '手动触发' }}
 
-          PR_NUMBER="$(gh pr list \
-            --base "$BASE" \
-            --head "$HEAD" \
-            --state open \
-            --json number \
-            --jq '.[0].number')"
-
-          if [ -z "$PR_NUMBER" ]; then
-            {
-              echo "Automated daily upstream sync."
-              echo
-              echo "- Source: openclaw/main"
-              echo "- Mirror branch: upstream-main"
-              echo "- Target: $BASE"
-            } > /tmp/upstream-sync-pr-body.md
-            gh pr create \
-              --base "$BASE" \
-              --head "$HEAD" \
-              --title "chore(sync): merge upstream main into $BASE" \
-              --body-file /tmp/upstream-sync-pr-body.md
-          else
-            gh pr comment "$PR_NUMBER" --body "Upstream sync updated upstream-main again. Please re-run CI and merge when green."
-          fi
+      - name: Notify Discord - Failure
+        if: failure()
+        uses: Ilshidur/action-discord@master
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_UPSTREAM_SYNC_WEBHOOK }}
+        with:
+          args: |
+            ❌ **上游同步失败**
+            
+            🔴 状态: 同步过程中发生错误
+            
+            📝 ${{ steps.sync.outputs.message || '未知错误' }}
+            
+            🔗 目标分支: `${{ env.TARGET_BRANCH }}`
+            ⬆️ 上游: `${{ env.UPSTREAM_REPO }}:${{ env.UPSTREAM_BRANCH }}`
+            
+            📎 查看运行日志: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            
+            ⏰ 时间: ${{ github.event.schedule || '手动触发' }}
