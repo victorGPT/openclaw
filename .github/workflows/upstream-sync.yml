@@ -1,0 +1,67 @@
+name: Daily Upstream Sync
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+env:
+  UPSTREAM_REPO: openclaw/openclaw
+  UPSTREAM_BRANCH: main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git || true
+          git fetch upstream
+
+      - name: Sync main branch
+        id: sync
+        run: |
+          git checkout main
+          LOCAL_COMMIT=$(git rev-parse HEAD)
+          UPSTREAM_COMMIT=$(git rev-parse upstream/${{ env.UPSTREAM_BRANCH }})
+          
+          if [ "$LOCAL_COMMIT" == "$UPSTREAM_COMMIT" ]; then
+            echo "status=up-to-date" >> $GITHUB_OUTPUT
+            echo "message=无需更新，已是最新" >> $GITHUB_OUTPUT
+          else
+            COMMITS_BEHIND=$(git rev-list --count HEAD..upstream/${{ env.UPSTREAM_BRANCH }})
+            git reset --hard upstream/${{ env.UPSTREAM_BRANCH }}
+            git push origin main --force-with-lease
+            
+            COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+            echo "status=updated" >> $GITHUB_OUTPUT
+            echo "message=已同步 ${{ env.UPSTREAM_REPO }}@${{ env.UPSTREAM_BRANCH }}" >> $GITHUB_OUTPUT
+            echo "commits=$COMMITS_BEHIND" >> $GITHUB_OUTPUT
+            echo "commit_msg=$COMMIT_MSG" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify Discord
+        if: always()
+        uses: Ilshidur/action-discord@master
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_UPSTREAM_SYNC_WEBHOOK }}
+        with:
+          args: |
+            ${{ steps.sync.outputs.status == 'up-to-date' && '✅ **上游同步 - 已是最新**' || '📥 **上游同步 - 已更新**' }}
+            
+            📝 ${{ steps.sync.outputs.message }}
+            ${{ steps.sync.outputs.commits && format('📊 同步了 {0} 个提交', steps.sync.outputs.commits) || '' }}
+            ${{ steps.sync.outputs.commit_msg && format('💬 最新提交: {0}', steps.sync.outputs.commit_msg) || '' }}
+            
+            ⏰ ${{ github.event.schedule && '定时任务' || '手动触发' }}
