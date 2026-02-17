@@ -39,6 +39,22 @@ title: "Fork Upstream Sync Strategy"
 - 角色：承载我们自己的 patch（例如 Discord reaction 状态机）
 - 约束：通过 PR 接收上游更新，避免直接污染
 
+### 分支流向图（Mermaid）
+
+```mermaid
+flowchart LR
+    U[openclaw/main\n官方源码主分支] -->|daily sync via workflow| M[victorGPT/upstream-main\nfork镜像分支]
+    M -->|auto PR| C[victorGPT/fix/discord-reaction-state-machine-only\n自维护分支]
+
+    F[victorGPT/main\nfork默认分支] -.hosts workflow.-> W[.github/workflows/upstream-sync.yml]
+    W -.runs on schedule / dispatch.-> M
+```
+
+说明：
+- workflow 文件放在 `victorGPT/main`，用于调度。
+- 真正承接上游同步的是 `victorGPT/upstream-main`。
+- 我们的运行分支只从 `upstream-main` 走 PR 合并，不直接追 `openclaw/main`。
+
 ---
 
 ## 2) 我们遇到的情况与问题
