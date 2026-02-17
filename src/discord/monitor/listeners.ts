@@ -5,7 +5,6 @@ import {
   MessageReactionAddListener,
   MessageReactionRemoveListener,
   PresenceUpdateListener,
-  type User,
 } from "@buape/carbon";
 import { danger } from "../../globals.js";
 import { formatDurationSeconds } from "../../infra/format-time/format-duration.ts";
@@ -263,44 +262,6 @@ async function handleDiscordReactionEvent(params: {
         contextKey,
       });
     };
-    const shouldNotifyReaction = (options: {
-      mode: "off" | "own" | "all" | "allowlist";
-      messageAuthorId?: string;
-    }) =>
-      shouldEmitDiscordReactionNotification({
-        mode: options.mode,
-        botId: botUserId,
-        messageAuthorId: options.messageAuthorId,
-        userId: user.id,
-        userName: user.username,
-        userTag: formatDiscordUserTag(user),
-        allowlist: guildInfo?.users,
-      });
-    const emitReactionWithAuthor = (message: { author?: User } | null) => {
-      const { baseText } = resolveReactionBase();
-      const authorLabel = message?.author ? formatDiscordUserTag(message.author) : undefined;
-      const text = authorLabel ? `${baseText} from ${authorLabel}` : baseText;
-      emitReaction(text, parentId);
-    };
-    const loadThreadParentInfo = async () => {
-      if (!parentId) {
-        return;
-      }
-      const parentInfo = await resolveDiscordChannelInfo(client, parentId);
-      parentName = parentInfo?.name;
-      parentSlug = parentName ? normalizeDiscordSlug(parentName) : "";
-    };
-    const resolveThreadChannelConfig = () =>
-      resolveDiscordChannelConfigWithFallback({
-        guildInfo,
-        channelId: data.channel_id,
-        channelName,
-        channelSlug,
-        parentId,
-        parentName,
-        parentSlug,
-        scope: "thread",
-      });
 
     // Parallelize async operations for thread channels
     if (isThreadChannel) {
@@ -319,16 +280,38 @@ async function handleDiscordReactionEvent(params: {
       if (reactionMode === "all" || reactionMode === "allowlist") {
         const channelInfo = await channelInfoPromise;
         parentId = channelInfo?.parentId;
-        await loadThreadParentInfo();
 
-        const channelConfig = resolveThreadChannelConfig();
+        if (parentId) {
+          const parentInfo = await resolveDiscordChannelInfo(client, parentId);
+          parentName = parentInfo?.name;
+          parentSlug = parentName ? normalizeDiscordSlug(parentName) : "";
+        }
+
+        const channelConfig = resolveDiscordChannelConfigWithFallback({
+          guildInfo,
+          channelId: data.channel_id,
+          channelName,
+          channelSlug,
+          parentId,
+          parentName,
+          parentSlug,
+          scope: "thread",
+        });
         if (channelConfig?.allowed === false) {
           return;
         }
 
         // For allowlist mode, check if user is in allowlist first
         if (reactionMode === "allowlist") {
-          if (!shouldNotifyReaction({ mode: reactionMode })) {
+          const shouldNotifyAllowlist = shouldEmitDiscordReactionNotification({
+            mode: reactionMode,
+            botId: botUserId,
+            userId: user.id,
+            userName: user.username,
+            userTag: formatDiscordUserTag(user),
+            allowlist: guildInfo?.users,
+          });
+          if (!shouldNotifyAllowlist) {
             return;
           }
         }
@@ -338,24 +321,50 @@ async function handleDiscordReactionEvent(params: {
         return;
       }
 
-      // For "own" mode, we need to fetch the message to check the author
-      const messagePromise = data.message.fetch().catch(() => null);
-
-      const [channelInfo, message] = await Promise.all([channelInfoPromise, messagePromise]);
+      // For "own" mode, resolve allowlist/channel gates first, then fetch message author
+      // only when needed.
+      const channelInfo = await channelInfoPromise;
       parentId = channelInfo?.parentId;
-      await loadThreadParentInfo();
 
-      const channelConfig = resolveThreadChannelConfig();
+      if (parentId) {
+        const parentInfo = await resolveDiscordChannelInfo(client, parentId);
+        parentName = parentInfo?.name;
+        parentSlug = parentName ? normalizeDiscordSlug(parentName) : "";
+      }
+
+      const channelConfig = resolveDiscordChannelConfigWithFallback({
+        guildInfo,
+        channelId: data.channel_id,
+        channelName,
+        channelSlug,
+        parentId,
+        parentName,
+        parentSlug,
+        scope: "thread",
+      });
       if (channelConfig?.allowed === false) {
         return;
       }
 
+      const message = await data.message.fetch().catch(() => null);
       const messageAuthorId = message?.author?.id ?? undefined;
-      if (!shouldNotifyReaction({ mode: reactionMode, messageAuthorId })) {
+      const shouldNotify = shouldEmitDiscordReactionNotification({
+        mode: reactionMode,
+        botId: botUserId,
+        messageAuthorId,
+        userId: user.id,
+        userName: user.username,
+        userTag: formatDiscordUserTag(user),
+        allowlist: guildInfo?.users,
+      });
+      if (!shouldNotify) {
         return;
       }
 
-      emitReactionWithAuthor(message);
+      const { baseText } = resolveReactionBase();
+      const authorLabel = message?.author ? formatDiscordUserTag(message.author) : undefined;
+      const text = authorLabel ? `${baseText} from ${authorLabel}` : baseText;
+      emitReaction(text, parentId);
       return;
     }
 
@@ -385,7 +394,15 @@ async function handleDiscordReactionEvent(params: {
     if (reactionMode === "all" || reactionMode === "allowlist") {
       // For allowlist mode, check if user is in allowlist first
       if (reactionMode === "allowlist") {
-        if (!shouldNotifyReaction({ mode: reactionMode })) {
+        const shouldNotifyAllowlist = shouldEmitDiscordReactionNotification({
+          mode: reactionMode,
+          botId: botUserId,
+          userId: user.id,
+          userName: user.username,
+          userTag: formatDiscordUserTag(user),
+          allowlist: guildInfo?.users,
+        });
+        if (!shouldNotifyAllowlist) {
           return;
         }
       }
@@ -398,11 +415,23 @@ async function handleDiscordReactionEvent(params: {
     // For "own" mode, we need to fetch the message to check the author
     const message = await data.message.fetch().catch(() => null);
     const messageAuthorId = message?.author?.id ?? undefined;
-    if (!shouldNotifyReaction({ mode: reactionMode, messageAuthorId })) {
+    const shouldNotify = shouldEmitDiscordReactionNotification({
+      mode: reactionMode,
+      botId: botUserId,
+      messageAuthorId,
+      userId: user.id,
+      userName: user.username,
+      userTag: formatDiscordUserTag(user),
+      allowlist: guildInfo?.users,
+    });
+    if (!shouldNotify) {
       return;
     }
 
-    emitReactionWithAuthor(message);
+    const { baseText } = resolveReactionBase();
+    const authorLabel = message?.author ? formatDiscordUserTag(message.author) : undefined;
+    const text = authorLabel ? `${baseText} from ${authorLabel}` : baseText;
+    emitReaction(text, parentId);
   } catch (err) {
     params.logger.error(danger(`discord reaction handler failed: ${String(err)}`));
   }
