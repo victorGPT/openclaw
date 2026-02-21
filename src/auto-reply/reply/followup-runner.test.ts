@@ -250,6 +250,29 @@ describe("createFollowupRunner messaging tool dedupe", () => {
     expect(onBlockReply).toHaveBeenCalledTimes(1);
   });
 
+  it("forwards suppressToolErrorWarnings to followup agent runs", async () => {
+    const onBlockReply = vi.fn(async () => {});
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "hello world!" }],
+      meta: {},
+    });
+
+    const runner = createFollowupRunner({
+      opts: { onBlockReply, suppressToolErrorWarnings: true },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+
+    await runner(baseQueuedRun());
+
+    expect(runEmbeddedPiAgentMock).toHaveBeenCalled();
+    const lastCall = runEmbeddedPiAgentMock.mock.calls.at(-1)?.[0] as {
+      suppressToolErrorWarnings?: boolean;
+    };
+    expect(lastCall?.suppressToolErrorWarnings).toBe(true);
+  });
+
   it("persists usage even when replies are suppressed", async () => {
     const storePath = path.join(
       await fs.mkdtemp(path.join(tmpdir(), "openclaw-followup-usage-")),
