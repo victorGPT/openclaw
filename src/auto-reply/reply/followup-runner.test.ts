@@ -326,6 +326,30 @@ describe("createFollowupRunner messaging tool dedupe", () => {
     expect(call.runId).toBe("queued-run-id");
   });
 
+  it("reuses queued runId for queue-managed summary drains without queue outcome handler", async () => {
+    const onBlockReply = vi.fn(async () => {});
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "hello world!" }],
+      meta: {},
+    });
+
+    const runner = createFollowupRunner({
+      opts: { onBlockReply },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+
+    const queued = baseQueuedRun();
+    queued.run.runId = "summary-run-id";
+    queued.queueManaged = true;
+
+    await runner(queued);
+
+    const call = runEmbeddedPiAgentMock.mock.calls[0]?.[0] as { runId?: string };
+    expect(call.runId).toBe("summary-run-id");
+  });
+
   it("persists usage even when replies are suppressed", async () => {
     const storePath = path.join(
       await fs.mkdtemp(path.join(tmpdir(), "openclaw-followup-usage-")),

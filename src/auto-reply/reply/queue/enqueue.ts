@@ -43,6 +43,7 @@ export function enqueueFollowupRun(
     return false;
   }
 
+  run.queueManaged = true;
   queue.lastEnqueuedAt = Date.now();
   queue.lastRun = run.run;
 

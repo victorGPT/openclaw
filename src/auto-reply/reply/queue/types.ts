@@ -25,6 +25,8 @@ export type FollowupRun = {
   messageId?: string;
   summaryLine?: string;
   enqueuedAt: number;
+  /** True when this run was produced by queue drain paths (including queue summary drains). */
+  queueManaged?: boolean;
   /** Per-run queue outcome callback, keyed by runId correlation. */
   onQueueOutcome?: (payload: FollowupQueueOutcome) => Promise<void> | void;
   /**

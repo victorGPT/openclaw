@@ -102,6 +102,7 @@ export function scheduleFollowupDrain(
             prompt,
             run,
             enqueuedAt: Date.now(),
+            queueManaged: true,
             onQueueOutcome: retainedRun?.onQueueOutcome,
             originatingChannel,
             originatingTo,
@@ -127,6 +128,7 @@ export function scheduleFollowupDrain(
                 prompt: summaryPrompt,
                 run,
                 enqueuedAt: Date.now(),
+                queueManaged: true,
               });
             }))
           ) {
