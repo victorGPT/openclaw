@@ -104,7 +104,7 @@ describe("runEmbeddedPiAgent unknown tool schema refresh", () => {
           promptError: null,
           lastAssistant: {
             stopReason: "error",
-            errorMessage: "tool \"plugin_search\" is not available",
+            errorMessage: 'tool "plugin_search" is not available',
           } as EmbeddedRunAttemptResult["lastAssistant"],
           systemPromptReport: makeSystemPromptReport(["message", "web_search"]),
         }),
