@@ -13,12 +13,11 @@ import { stripHeartbeatToken } from "../heartbeat.js";
 import type { OriginatingChannelType } from "../templating.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
-import { resolveRunAuthProfile } from "./agent-runner-utils.js";
 import type { FollowupRun } from "./queue.js";
+import { emitFollowupQueueOutcome } from "./queue/outcome.js";
 import {
   applyReplyThreading,
   filterMessagingToolDuplicates,
-  filterMessagingToolMediaDuplicates,
   shouldSuppressMessagingToolReplies,
 } from "./reply-payloads.js";
 import { resolveReplyToMode } from "./reply-threading.js";
@@ -54,6 +53,14 @@ export function createFollowupRunner(params: {
     mode: typingMode,
     isHeartbeat: opts?.isHeartbeat === true,
   });
+
+  const emitQueueFailure = async (queued: FollowupRun, reason: string) => {
+    try {
+      emitFollowupQueueOutcome(queued, "failed", reason);
+    } catch {
+      // Queue outcome callbacks are best-effort and must not block followup cleanup.
+    }
+  };
 
   /**
    * Sends followup payloads, routing to the originating channel if set.
@@ -114,7 +121,8 @@ export function createFollowupRunner(params: {
 
   return async (queued: FollowupRun) => {
     try {
-      const runId = crypto.randomUUID();
+      const runId = queued.run.runId?.trim() || crypto.randomUUID();
+      queued.run.runId = runId;
       if (queued.run.sessionKey) {
         registerAgentRunContext(runId, {
           sessionKey: queued.run.sessionKey,
@@ -125,6 +133,7 @@ export function createFollowupRunner(params: {
       let runResult: Awaited<ReturnType<typeof runEmbeddedPiAgent>>;
       let fallbackProvider = queued.run.provider;
       let fallbackModel = queued.run.model;
+      let lifecycleStarted = false;
       try {
         const fallbackResult = await runWithModelFallback({
           cfg: queued.run.config,
@@ -136,7 +145,6 @@ export function createFollowupRunner(params: {
             resolveAgentIdFromSessionKey(queued.run.sessionKey),
           ),
           run: (provider, model) => {
-            const authProfile = resolveRunAuthProfile(queued.run, provider);
             return runEmbeddedPiAgent({
               sessionId: queued.run.sessionId,
               sessionKey: queued.run.sessionKey,
@@ -163,17 +171,21 @@ export function createFollowupRunner(params: {
               enforceFinalTag: queued.run.enforceFinalTag,
               provider,
               model,
-              ...authProfile,
               thinkLevel: queued.run.thinkLevel,
               verboseLevel: queued.run.verboseLevel,
               reasoningLevel: queued.run.reasoningLevel,
-              suppressToolErrorWarnings: opts?.suppressToolErrorWarnings,
               execOverrides: queued.run.execOverrides,
               bashElevated: queued.run.bashElevated,
               timeoutMs: queued.run.timeoutMs,
               runId,
               blockReplyBreak: queued.run.blockReplyBreak,
               onAgentEvent: (evt) => {
+                if (evt.stream === "lifecycle") {
+                  const phase = typeof evt.data.phase === "string" ? evt.data.phase : "";
+                  if (phase === "start") {
+                    lifecycleStarted = true;
+                  }
+                }
                 if (evt.stream !== "compaction") {
                   return;
                 }
@@ -191,6 +203,9 @@ export function createFollowupRunner(params: {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         defaultRuntime.error?.(`Followup agent failed before reply: ${message}`);
+        if (!lifecycleStarted) {
+          await emitQueueFailure(queued, `pre-start-fail:${message}`);
+        }
         return;
       }
 
@@ -253,17 +268,13 @@ export function createFollowupRunner(params: {
         payloads: replyTaggedPayloads,
         sentTexts: runResult.messagingToolSentTexts ?? [],
       });
-      const mediaFilteredPayloads = filterMessagingToolMediaDuplicates({
-        payloads: dedupedPayloads,
-        sentMediaUrls: runResult.messagingToolSentMediaUrls ?? [],
-      });
       const suppressMessagingToolReplies = shouldSuppressMessagingToolReplies({
         messageProvider: queued.run.messageProvider,
         messagingToolSentTargets: runResult.messagingToolSentTargets,
         originatingTo: queued.originatingTo,
         accountId: queued.run.agentAccountId,
       });
-      const finalPayloads = suppressMessagingToolReplies ? [] : mediaFilteredPayloads;
+      const finalPayloads = suppressMessagingToolReplies ? [] : dedupedPayloads;
 
       if (finalPayloads.length === 0) {
         return;
