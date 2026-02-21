@@ -847,6 +847,9 @@ export async function runEmbeddedPiAgent(
                       source: "promptError" as const,
                     };
                   }
+                  // Prompt submission failed with a non-unknown-tool error. Do not
+                  // inspect prior assistant errors from history for this attempt.
+                  return null;
                 }
                 if (assistantErrorText && isUnknownToolFailure(assistantErrorText)) {
                   return {
