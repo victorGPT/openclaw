@@ -350,6 +350,62 @@ describe("createFollowupRunner messaging tool dedupe", () => {
     expect(call.runId).toBe("summary-run-id");
   });
 
+  it("emits failed queue outcome when followup run errors before lifecycle start", async () => {
+    const onBlockReply = vi.fn(async () => {});
+    const onQueueOutcome = vi.fn();
+    runEmbeddedPiAgentMock.mockRejectedValueOnce(new Error("boom-pre"));
+
+    const runner = createFollowupRunner({
+      opts: { onBlockReply },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+
+    const queued = baseQueuedRun();
+    queued.onQueueOutcome = onQueueOutcome;
+
+    await runner(queued);
+
+    expect(onBlockReply).not.toHaveBeenCalled();
+    expect(onQueueOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "failed", reason: expect.stringContaining("pre-start-fail:") }),
+    );
+  });
+
+  it("emits failed queue outcome when followup run errors after lifecycle start", async () => {
+    const onBlockReply = vi.fn(async () => {});
+    const onQueueOutcome = vi.fn();
+    runEmbeddedPiAgentMock.mockImplementationOnce(
+      async (args: {
+        onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void;
+      }) => {
+        args.onAgentEvent?.({ stream: "lifecycle", data: { phase: "start" } });
+        throw new Error("boom-post");
+      },
+    );
+
+    const runner = createFollowupRunner({
+      opts: { onBlockReply },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+
+    const queued = baseQueuedRun();
+    queued.onQueueOutcome = onQueueOutcome;
+
+    await runner(queued);
+
+    expect(onBlockReply).not.toHaveBeenCalled();
+    expect(onQueueOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "failed",
+        reason: expect.stringContaining("post-start-fail:"),
+      }),
+    );
+  });
+
   it("persists usage even when replies are suppressed", async () => {
     const storePath = path.join(
       await fs.mkdtemp(path.join(tmpdir(), "openclaw-followup-usage-")),

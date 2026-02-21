@@ -211,9 +211,8 @@ export function createFollowupRunner(params: {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         defaultRuntime.error?.(`Followup agent failed before reply: ${message}`);
-        if (!lifecycleStarted) {
-          await emitQueueFailure(queued, `pre-start-fail:${message}`);
-        }
+        const phaseTag = lifecycleStarted ? "post-start-fail" : "pre-start-fail";
+        await emitQueueFailure(queued, `${phaseTag}:${message}`);
         return;
       }
 
