@@ -123,7 +123,9 @@ export function createFollowupRunner(params: {
 
   return async (queued: FollowupRun) => {
     try {
-      const runId = queued.run.runId?.trim() || crypto.randomUUID();
+      const existingRunId = queued.run.runId?.trim();
+      const shouldReuseQueuedRunId = Boolean(queued.onQueueOutcome && existingRunId);
+      const runId = shouldReuseQueuedRunId ? existingRunId : crypto.randomUUID();
       queued.run.runId = runId;
       if (queued.run.sessionKey) {
         registerAgentRunContext(runId, {
