@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
+import type { SessionSystemPromptReport } from "../../config/sessions/types.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
@@ -73,6 +75,52 @@ function scrubAnthropicRefusalMagic(prompt: string): string {
     ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL,
     ANTHROPIC_MAGIC_STRING_REPLACEMENT,
   );
+}
+
+type ToolSchemaSnapshot = {
+  toolCount: number;
+  schemaChars: number;
+  listChars: number;
+  fingerprint: string;
+};
+
+type UnknownToolErrorSource = "promptError" | "assistantError";
+
+function isUnknownToolFailure(text?: string): boolean {
+  const message = text?.trim();
+  if (!message) {
+    return false;
+  }
+  return (
+    /unknown tool[:\s]+["']?[a-z0-9_-]+["']?/i.test(message) ||
+    /tool\s+["']?[a-z0-9_-]+["']?\s+(?:not found|is not available)/i.test(message) ||
+    /tool_choice requested unknown tool/i.test(message)
+  );
+}
+
+function snapshotToolSchema(report?: SessionSystemPromptReport): ToolSchemaSnapshot {
+  const entries = report?.tools?.entries ?? [];
+  const serializedEntries = entries
+    .map((entry) =>
+      JSON.stringify({
+        name: entry.name,
+        summaryChars: entry.summaryChars,
+        schemaChars: entry.schemaChars,
+        propertiesCount: entry.propertiesCount ?? null,
+      }),
+    )
+    .sort();
+  const fingerprint = crypto
+    .createHash("sha256")
+    .update(serializedEntries.join("|"))
+    .digest("hex")
+    .slice(0, 12);
+  return {
+    toolCount: entries.length,
+    schemaChars: report?.tools?.schemaChars ?? 0,
+    listChars: report?.tools?.listChars ?? 0,
+    fingerprint,
+  };
 }
 
 type UsageAccumulator = {
@@ -473,6 +521,14 @@ export async function runEmbeddedPiAgent(
       const MAX_OVERFLOW_COMPACTION_ATTEMPTS = 3;
       let overflowCompactionAttempts = 0;
       let toolResultTruncationAttempted = false;
+      let unknownToolRefreshRetried = false;
+      let refreshToolSchema = false;
+      let pendingToolSchemaComparison:
+        | {
+            before: ToolSchemaSnapshot;
+            source: UnknownToolErrorSource;
+          }
+        | undefined;
       const usageAccumulator = createUsageAccumulator();
       let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
       let autoCompactionCount = 0;
@@ -483,6 +539,8 @@ export async function runEmbeddedPiAgent(
 
           const prompt =
             provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt;
+          const refreshToolSchemaForAttempt = refreshToolSchema;
+          refreshToolSchema = false;
 
           const attempt = await runEmbeddedAttempt({
             sessionId: params.sessionId,
@@ -541,6 +599,7 @@ export async function runEmbeddedPiAgent(
             streamParams: params.streamParams,
             ownerNumbers: params.ownerNumbers,
             enforceFinalTag: params.enforceFinalTag,
+            refreshToolSchema: refreshToolSchemaForAttempt,
           });
 
           const {
@@ -577,6 +636,20 @@ export async function runEmbeddedPiAgent(
             lastAssistant?.stopReason === "error"
               ? lastAssistant.errorMessage?.trim() || formattedAssistantErrorText
               : undefined;
+          if (refreshToolSchemaForAttempt && pendingToolSchemaComparison) {
+            const after = snapshotToolSchema(attempt.systemPromptReport);
+            const before = pendingToolSchemaComparison.before;
+            const changed = before.fingerprint !== after.fingerprint;
+            log.info(
+              `[tool-schema-refresh] source=${pendingToolSchemaComparison.source} ` +
+                `beforeFingerprint=${before.fingerprint} afterFingerprint=${after.fingerprint} ` +
+                `beforeToolCount=${before.toolCount} afterToolCount=${after.toolCount} ` +
+                `beforeSchemaChars=${before.schemaChars} afterSchemaChars=${after.schemaChars} ` +
+                `beforeListChars=${before.listChars} afterListChars=${after.listChars} ` +
+                `changed=${changed ? "yes" : "no"}`,
+            );
+            pendingToolSchemaComparison = undefined;
+          }
 
           const contextOverflowError = !aborted
             ? (() => {
@@ -758,6 +831,44 @@ export async function runEmbeddedPiAgent(
                 error: { kind, message: errorText },
               },
             };
+          }
+
+          const unknownToolError = !aborted
+            ? (() => {
+                if (promptError) {
+                  const errorText = describeUnknownError(promptError);
+                  if (isUnknownToolFailure(errorText)) {
+                    return {
+                      text: errorText,
+                      source: "promptError" as const,
+                    };
+                  }
+                }
+                if (assistantErrorText && isUnknownToolFailure(assistantErrorText)) {
+                  return {
+                    text: assistantErrorText,
+                    source: "assistantError" as const,
+                  };
+                }
+                return null;
+              })()
+            : null;
+          if (unknownToolError && !unknownToolRefreshRetried) {
+            unknownToolRefreshRetried = true;
+            refreshToolSchema = true;
+            const beforeSnapshot = snapshotToolSchema(attempt.systemPromptReport);
+            pendingToolSchemaComparison = {
+              before: beforeSnapshot,
+              source: unknownToolError.source,
+            };
+            log.warn(
+              `[tool-schema-refresh] unknown-tool detected source=${unknownToolError.source} ` +
+                `retry=1/1 bypassPluginCache=true ` +
+                `toolCount=${beforeSnapshot.toolCount} schemaChars=${beforeSnapshot.schemaChars} ` +
+                `listChars=${beforeSnapshot.listChars} fingerprint=${beforeSnapshot.fingerprint} ` +
+                `error=${unknownToolError.text.slice(0, 200)}`,
+            );
+            continue;
           }
 
           if (promptError && !aborted) {
