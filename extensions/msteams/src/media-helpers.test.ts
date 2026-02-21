@@ -154,6 +154,10 @@ describe("msteams media-helpers", () => {
       expect(isLocalPath("\\\\server\\share\\image.png")).toBe(true);
     });
 
+    it("returns true for Windows root-relative paths", () => {
+      expect(isLocalPath("\\tmp\\image.png")).toBe(true);
+    });
+
     it("returns false for http URLs", () => {
       expect(isLocalPath("http://example.com/image.png")).toBe(false);
       expect(isLocalPath("https://example.com/image.png")).toBe(false);
