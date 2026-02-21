@@ -169,4 +169,4 @@ export const CommandsSchema = z
   })
   .strict()
   .optional()
-  .default({ native: "auto", nativeSkills: "auto", restart: true });
+  .default({ native: "auto", nativeSkills: "auto", restart: true, ownerDisplay: "raw" });
