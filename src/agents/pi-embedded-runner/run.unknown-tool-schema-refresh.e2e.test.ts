@@ -104,7 +104,7 @@ describe("runEmbeddedPiAgent unknown tool schema refresh", () => {
           promptError: null,
           lastAssistant: {
             stopReason: "error",
-            errorMessage: "tool \"plugin_search\" is not available",
+            errorMessage: 'tool "plugin_search" is not available',
           } as EmbeddedRunAttemptResult["lastAssistant"],
           systemPromptReport: makeSystemPromptReport(["message", "web_search"]),
         }),
@@ -126,6 +126,29 @@ describe("runEmbeddedPiAgent unknown tool schema refresh", () => {
       expect.stringContaining("[tool-schema-refresh] source=assistantError"),
     );
     expect(result.meta.error).toBeUndefined();
+  });
+
+  it("does not retry from assistant unknown-tool text when promptError is non-unknown", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValue(
+      makeAttemptResult({
+        promptError: new Error("transport disconnected"),
+        lastAssistant: {
+          stopReason: "error",
+          errorMessage: 'tool "plugin_search" is not available',
+        } as EmbeddedRunAttemptResult["lastAssistant"],
+        systemPromptReport: makeSystemPromptReport(["message", "web_search"]),
+      }),
+    );
+
+    await expect(runEmbeddedPiAgent(baseParams)).rejects.toThrow("transport disconnected");
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+    expect(mockedRunEmbeddedAttempt.mock.calls[0]?.[0]).toMatchObject({
+      refreshToolSchema: false,
+    });
+    expect(log.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("[tool-schema-refresh] unknown-tool detected source=assistantError"),
+    );
   });
 
   it("retries unknown tool failure exactly once", async () => {
