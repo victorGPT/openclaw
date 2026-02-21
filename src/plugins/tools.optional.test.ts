@@ -171,8 +171,6 @@ describe("resolvePluginTools optional tools", () => {
       refreshToolSchema: true,
     });
 
-    expect(loadOpenClawPluginsMock).toHaveBeenCalledWith(
-      expect.objectContaining({ cache: false }),
-    );
+    expect(loadOpenClawPluginsMock).toHaveBeenCalledWith(expect.objectContaining({ cache: false }));
   });
 });

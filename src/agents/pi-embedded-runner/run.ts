@@ -1,5 +1,5 @@
-import fs from "node:fs/promises";
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { SessionSystemPromptReport } from "../../config/sessions/types.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
@@ -109,7 +109,7 @@ function snapshotToolSchema(report?: SessionSystemPromptReport): ToolSchemaSnaps
         propertiesCount: entry.propertiesCount ?? null,
       }),
     )
-    .sort();
+    .toSorted();
   const fingerprint = crypto
     .createHash("sha256")
     .update(serializedEntries.join("|"))
