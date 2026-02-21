@@ -155,7 +155,7 @@ describe("resolvePluginTools optional tools", () => {
     expect(registry.diagnostics[0]?.message).toContain("plugin tool name conflict");
   });
 
-  it("bypasses plugin registry cache when refreshToolSchema is requested", () => {
+  it("requests plugin registry refresh mode when refreshToolSchema is requested", () => {
     setRegistry([
       {
         pluginId: "optional-demo",
@@ -171,6 +171,10 @@ describe("resolvePluginTools optional tools", () => {
       refreshToolSchema: true,
     });
 
-    expect(loadOpenClawPluginsMock).toHaveBeenCalledWith(expect.objectContaining({ cache: false }));
+    const loadArgs = loadOpenClawPluginsMock.mock.calls[0]?.[0] as
+      | { refresh?: boolean; cache?: boolean }
+      | undefined;
+    expect(loadArgs?.refresh).toBe(true);
+    expect(loadArgs?.cache).toBeUndefined();
   });
 });

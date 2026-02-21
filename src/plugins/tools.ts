@@ -60,7 +60,7 @@ export function resolvePluginTools(params: {
     config: effectiveConfig,
     workspaceDir: params.context.workspaceDir,
     logger: createPluginLoaderLogger(log),
-    ...(params.refreshToolSchema ? { cache: false } : {}),
+    ...(params.refreshToolSchema ? { refresh: true } : {}),
   });
 
   const tools: AnyAgentTool[] = [];
