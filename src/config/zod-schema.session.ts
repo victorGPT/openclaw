@@ -113,6 +113,7 @@ export const MessagesSchema = z
     inbound: InboundDebounceSchema,
     ackReaction: z.string().optional(),
     ackReactionScope: z.enum(["group-mentions", "group-all", "direct", "all"]).optional(),
+    statusReactionMode: z.enum(["full", "off"]).optional(),
     removeAckAfterReply: z.boolean().optional(),
     suppressToolErrors: z.boolean().optional(),
     tts: TtsConfigSchema,

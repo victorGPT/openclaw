@@ -49,6 +49,8 @@ export type AudioConfig = {
   };
 };
 
+export type StatusReactionMode = "full" | "off";
+
 export type MessagesConfig = {
   /** @deprecated Use `whatsapp.messagePrefix` (WhatsApp-only inbound prefix). */
   messagePrefix?: string;
@@ -80,6 +82,8 @@ export type MessagesConfig = {
   ackReaction?: string;
   /** When to send ack reactions. Default: "group-mentions". */
   ackReactionScope?: "group-mentions" | "group-all" | "direct" | "all";
+  /** Status reaction flow mode. `full` keeps intermediate states; `off` keeps only initial ack. */
+  statusReactionMode?: StatusReactionMode;
   /** Remove ack reaction after reply is sent (default: false). */
   removeAckAfterReply?: boolean;
   /** When true, suppress ⚠️ tool-error warnings from being shown to the user. Default: false. */

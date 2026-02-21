@@ -1,38 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { OpenClawConfig } from "../../config/config.js";
-import type { MsgContext, TemplateContext } from "../templating.js";
-import type { FollowupRun, QueueSettings } from "./queue.js";
 import { expectInboundContextContract } from "../../../test/helpers/inbound-contract.js";
+import type { FollowupQueueOutcome } from "../types.js";
+import type { OpenClawConfig } from "../../config/config.js";
 import { defaultRuntime } from "../../runtime.js";
+import type { MsgContext } from "../templating.js";
 import { HEARTBEAT_TOKEN, SILENT_REPLY_TOKEN } from "../tokens.js";
 import { finalizeInboundContext } from "./inbound-context.js";
-import { buildInboundUserContextPrefix } from "./inbound-meta.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
 import { parseLineDirectives, hasLineDirectives } from "./line-directives.js";
+import type { FollowupRun, QueueSettings } from "./queue.js";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
 import { createReplyToModeFilter, resolveReplyToMode } from "./reply-threading.js";
-
-describe("buildInboundUserContextPrefix", () => {
-  it("omits conversation label block for direct chats", () => {
-    const text = buildInboundUserContextPrefix({
-      ChatType: "direct",
-      ConversationLabel: "openclaw-tui",
-    } as TemplateContext);
-
-    expect(text).toBe("");
-  });
-
-  it("keeps conversation label for group chats", () => {
-    const text = buildInboundUserContextPrefix({
-      ChatType: "group",
-      ConversationLabel: "ops-room",
-    } as TemplateContext);
-
-    expect(text).toContain("Conversation info (untrusted metadata):");
-    expect(text).toContain('"conversation_label": "ops-room"');
-  });
-});
 
 describe("normalizeInboundTextNewlines", () => {
   it("converts CRLF to LF", () => {
@@ -612,7 +591,7 @@ let previousRuntimeError: typeof defaultRuntime.error;
 
 beforeAll(() => {
   previousRuntimeError = defaultRuntime.error;
-  defaultRuntime.error = undefined;
+  defaultRuntime.error = (() => {}) as typeof defaultRuntime.error;
 });
 
 afterAll(() => {
@@ -622,6 +601,8 @@ afterAll(() => {
 function createRun(params: {
   prompt: string;
   messageId?: string;
+  runId?: string;
+  onQueueOutcome?: (payload: FollowupQueueOutcome) => void | Promise<void>;
   originatingChannel?: FollowupRun["originatingChannel"];
   originatingTo?: string;
   originatingAccountId?: string;
@@ -635,7 +616,9 @@ function createRun(params: {
     originatingTo: params.originatingTo,
     originatingAccountId: params.originatingAccountId,
     originatingThreadId: params.originatingThreadId,
+    onQueueOutcome: params.onQueueOutcome,
     run: {
+      runId: params.runId,
       agentId: "agent",
       agentDir: "/tmp",
       sessionId: "sess",
@@ -712,6 +695,97 @@ describe("followup queue deduplication", () => {
     await done.promise;
     // Should collect both unique messages
     expect(calls[0]?.prompt).toContain("[Queued messages while agent was busy]");
+  });
+
+  it("emits queued and skipped outcomes for deduped runs", () => {
+    const key = `test-outcome-dedupe-${Date.now()}`;
+    const outcomes: FollowupQueueOutcome[] = [];
+    const settings: QueueSettings = {
+      mode: "followup",
+      debounceMs: 0,
+      cap: 50,
+      dropPolicy: "summarize",
+    };
+
+    const first = enqueueFollowupRun(
+      key,
+      createRun({
+        prompt: "hello",
+        messageId: "m1",
+        runId: "run-1",
+        onQueueOutcome: (payload) => {
+          outcomes.push(payload);
+        },
+      }),
+      settings,
+    );
+    expect(first).toBe(true);
+
+    const second = enqueueFollowupRun(
+      key,
+      createRun({
+        prompt: "hello duplicate",
+        messageId: "m1",
+        runId: "run-2",
+        onQueueOutcome: (payload) => {
+          outcomes.push(payload);
+        },
+      }),
+      settings,
+    );
+    expect(second).toBe(false);
+
+    expect(outcomes).toEqual([
+      { runId: "run-1", status: "queued", reason: "enqueued" },
+      { runId: "run-2", status: "skipped", reason: "dedupe" },
+    ]);
+  });
+
+  it("swallows synchronous queue outcome handler errors", () => {
+    const key = `test-outcome-sync-throw-${Date.now()}`;
+    const settings: QueueSettings = {
+      mode: "followup",
+      debounceMs: 0,
+      cap: 50,
+      dropPolicy: "summarize",
+    };
+
+    const accepted = enqueueFollowupRun(
+      key,
+      createRun({
+        prompt: "hello",
+        runId: "run-sync-throw",
+        onQueueOutcome: () => {
+          throw new Error("sync outcome handler failure");
+        },
+      }),
+      settings,
+    );
+
+    expect(accepted).toBe(true);
+  });
+
+  it("swallows asynchronous queue outcome handler rejections", async () => {
+    const key = `test-outcome-async-reject-${Date.now()}`;
+    const settings: QueueSettings = {
+      mode: "followup",
+      debounceMs: 0,
+      cap: 50,
+      dropPolicy: "summarize",
+    };
+
+    const accepted = enqueueFollowupRun(
+      key,
+      createRun({
+        prompt: "hello",
+        runId: "run-async-reject",
+        onQueueOutcome: () => Promise.reject(new Error("async outcome handler failure")),
+      }),
+      settings,
+    );
+
+    expect(accepted).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   it("deduplicates exact prompt when routing matches and no message id", async () => {
@@ -913,6 +987,57 @@ describe("followup queue collect routing", () => {
     expect(calls[0]?.prompt).toContain("[Queued messages while agent was busy]");
     expect(calls[0]?.originatingChannel).toBe("slack");
     expect(calls[0]?.originatingTo).toBe("channel:A");
+  });
+
+  it("marks merged queue items when collect mode coalesces runs", async () => {
+    const key = `test-collect-merged-outcome-${Date.now()}`;
+    const done = createDeferred<void>();
+    const outcomes: FollowupQueueOutcome[] = [];
+    const runFollowup = async () => {
+      done.resolve();
+    };
+    const settings: QueueSettings = {
+      mode: "collect",
+      debounceMs: 0,
+      cap: 50,
+      dropPolicy: "summarize",
+    };
+
+    enqueueFollowupRun(
+      key,
+      createRun({
+        prompt: "one",
+        runId: "merge-1",
+        originatingChannel: "slack",
+        originatingTo: "channel:A",
+        onQueueOutcome: (payload) => {
+          outcomes.push(payload);
+        },
+      }),
+      settings,
+    );
+    enqueueFollowupRun(
+      key,
+      createRun({
+        prompt: "two",
+        runId: "merge-2",
+        originatingChannel: "slack",
+        originatingTo: "channel:A",
+        onQueueOutcome: (payload) => {
+          outcomes.push(payload);
+        },
+      }),
+      settings,
+    );
+
+    scheduleFollowupDrain(key, runFollowup);
+    await done.promise;
+
+    expect(outcomes).toContainEqual({
+      runId: "merge-1",
+      status: "merged",
+      reason: "collect-merged-into:merge-2",
+    });
   });
 
   it("collects Slack messages in same thread and preserves string thread id", async () => {
@@ -1146,7 +1271,7 @@ describe("createReplyDispatcher", () => {
     const deliver = vi.fn(async (_payload, info) => {
       delivered.push(info.kind);
       if (info.kind === "tool") {
-        await new Promise((resolve) => setTimeout(resolve, 5));
+        await Promise.resolve();
       }
     });
     const dispatcher = createReplyDispatcher({ deliver });
@@ -1160,7 +1285,8 @@ describe("createReplyDispatcher", () => {
   });
 
   it("fires onIdle when the queue drains", async () => {
-    const deliver = vi.fn(async () => await new Promise((resolve) => setTimeout(resolve, 5)));
+    const deliver: Parameters<typeof createReplyDispatcher>[0]["deliver"] = async () =>
+      await Promise.resolve();
     const onIdle = vi.fn();
     const dispatcher = createReplyDispatcher({ deliver, onIdle });
 

@@ -223,6 +223,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "messages.suppressToolErrors": "Suppress Tool Error Warnings",
   "messages.ackReaction": "Ack Reaction Emoji",
   "messages.ackReactionScope": "Ack Reaction Scope",
+  "messages.statusReactionMode": "Status Reaction Mode",
   "messages.inbound.debounceMs": "Inbound Message Debounce (ms)",
   "talk.apiKey": "Talk API Key",
   "channels.whatsapp": "WhatsApp",

@@ -1,3 +1,4 @@
+import { emitFollowupQueueOutcome } from "./outcome.js";
 import type { FollowupRun, QueueDropPolicy, QueueMode, QueueSettings } from "./types.js";
 
 export type FollowupQueueState = {
@@ -65,7 +66,11 @@ export function clearFollowupQueue(key: string): number {
   if (!queue) {
     return 0;
   }
-  const cleared = queue.items.length + queue.droppedCount;
+  const clearedItems = queue.items.slice();
+  const cleared = clearedItems.length + queue.droppedCount;
+  for (const run of clearedItems) {
+    emitFollowupQueueOutcome(run, "failed", "queue-cleared");
+  }
   queue.items.length = 0;
   queue.droppedCount = 0;
   queue.summaryLines = [];
