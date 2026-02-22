@@ -62,7 +62,6 @@ const DISCORD_STATUS_STALL_SOFT_MS = 10_000;
 const DISCORD_STATUS_STALL_HARD_MS = 30_000;
 const DISCORD_STATUS_DEFERRED_ERROR_RETRY_TTL_MS = 45_000;
 
-type DiscordStatusReactionMode = "full" | "off";
 type DiscordStatusTransitionMode = "full" | "ack-only";
 type DiscordStatusSemanticPhase = "queued" | "waiting" | "active" | "terminal";
 
@@ -615,10 +614,9 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     accountId,
   });
   const removeAckAfterReply = cfg.messages?.removeAckAfterReply ?? false;
-  const statusReactionMode: DiscordStatusReactionMode =
-    cfg.messages?.statusReactionMode === "off" ? "off" : "full";
+  const statusTransitionsConfigured = cfg.messages?.statusReactions?.enabled !== false;
   const statusTransitionMode: DiscordStatusTransitionMode =
-    statusReactionMode === "full" ? "full" : "ack-only";
+    statusTransitionsConfigured ? "full" : "ack-only";
   const shouldAckReaction = () =>
     Boolean(
       ackReaction &&
@@ -637,7 +635,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     agentId: route.agentId,
   });
   const statusReactionsEnabled = shouldAckReaction();
-  const statusTransitionsEnabled = statusReactionsEnabled && statusTransitionMode === "full";
+  const statusTransitionsEnabled = statusReactionsEnabled && statusTransitionsConfigured;
   const sessionActiveAtIngress =
     statusTransitionsEnabled &&
     isDiscordSessionRunActive({

@@ -845,7 +845,7 @@ describe("processDiscordMessage ack reactions", () => {
     expect(removed).toContain("⏳");
   });
 
-  it("keeps ack-only behavior in statusReactionMode=off even when reasoning/tools stream", async () => {
+  it("keeps ack-only behavior when messages.statusReactions.enabled=false even when reasoning/tools stream", async () => {
     dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
       await params?.replyOptions?.onReasoningStream?.();
       await params?.replyOptions?.onToolStart?.({ name: "exec" });
@@ -857,7 +857,7 @@ describe("processDiscordMessage ack reactions", () => {
         messages: {
           ackReaction: "👀",
           removeAckAfterReply: false,
-          statusReactionMode: "off",
+          statusReactions: { enabled: false },
         },
       },
     });
@@ -871,7 +871,35 @@ describe("processDiscordMessage ack reactions", () => {
     expect(emojis).toEqual(["👀"]);
   });
 
-  it("keeps ack-only behavior in statusReactionMode=off during long runs (no ⏳/⚠️)", async () => {
+  it("ignores legacy statusReactionMode=off when statusReactions.enabled=true", async () => {
+    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
+      await params?.replyOptions?.onReasoningStream?.();
+      await params?.replyOptions?.onToolStart?.({ name: "exec" });
+      return { queuedFinal: true, counts: { final: 1, tool: 0, block: 0 } };
+    });
+
+    const ctx = await createBaseContext({
+      cfg: {
+        messages: {
+          ackReaction: "👀",
+          removeAckAfterReply: false,
+          statusReactionMode: "off",
+          statusReactions: { enabled: true },
+        },
+      },
+    });
+
+    // oxlint-disable-next-line typescript/no-explicit-any
+    await processDiscordMessage(ctx as any);
+
+    const emojis = (
+      reactMessageDiscord.mock.calls as unknown as Array<[unknown, unknown, string]>
+    ).map((call) => call[2]);
+    expect(emojis).toContain("✅");
+    expect(emojis).not.toEqual(["👀"]);
+  });
+
+  it("keeps ack-only behavior when messages.statusReactions.enabled=false during long runs (no ⏳/⚠️)", async () => {
     vi.useFakeTimers();
     let releaseDispatch!: () => void;
     const dispatchGate = new Promise<void>((resolve) => {
@@ -887,7 +915,7 @@ describe("processDiscordMessage ack reactions", () => {
         messages: {
           ackReaction: "👀",
           removeAckAfterReply: false,
-          statusReactionMode: "off",
+          statusReactions: { enabled: false },
         },
       },
     });
@@ -905,14 +933,14 @@ describe("processDiscordMessage ack reactions", () => {
     expect(emojis).toEqual(["👀"]);
   });
 
-  it("clears ack in statusReactionMode=off when removeAckAfterReply is enabled", async () => {
+  it("clears ack when messages.statusReactions.enabled=false and removeAckAfterReply is enabled", async () => {
     vi.useFakeTimers();
     const ctx = await createBaseContext({
       cfg: {
         messages: {
           ackReaction: "👀",
           removeAckAfterReply: true,
-          statusReactionMode: "off",
+          statusReactions: { enabled: false },
         },
       },
     });
@@ -933,7 +961,7 @@ describe("processDiscordMessage ack reactions", () => {
     expect(removed).toContain("👀");
   });
 
-  it("clears ack in statusReactionMode=off when queue outcome is non-queued", async () => {
+  it("clears ack when messages.statusReactions.enabled=false and queue outcome is non-queued", async () => {
     vi.useFakeTimers();
     dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
       await params?.replyOptions?.onFollowupQueued?.({
@@ -949,7 +977,7 @@ describe("processDiscordMessage ack reactions", () => {
         messages: {
           ackReaction: "👀",
           removeAckAfterReply: true,
-          statusReactionMode: "off",
+          statusReactions: { enabled: false },
         },
       },
     });
@@ -969,7 +997,7 @@ describe("processDiscordMessage ack reactions", () => {
     expect(removed).toContain("👀");
   });
 
-  it("keeps ack in statusReactionMode=off for queued/deferred runs until lifecycle end", async () => {
+  it("keeps ack when messages.statusReactions.enabled=false for queued/deferred runs until lifecycle end", async () => {
     vi.useFakeTimers();
     dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
       await params?.replyOptions?.onFollowupQueued?.({
@@ -985,7 +1013,7 @@ describe("processDiscordMessage ack reactions", () => {
         messages: {
           ackReaction: "👀",
           removeAckAfterReply: true,
-          statusReactionMode: "off",
+          statusReactions: { enabled: false },
         },
         session: { store: "/tmp/openclaw-discord-process-test-sessions.json" },
       },
