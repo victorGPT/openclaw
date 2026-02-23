@@ -31,8 +31,8 @@ const createDiscordDraftStream = deliveryMocks.createDiscordDraftStream;
 const reactMessageDiscord = sendMocks.reactMessageDiscord;
 const removeReactionDiscord = sendMocks.removeReactionDiscord;
 type DispatchInboundParams = {
-  dispatcher?: {
-    sendFinalReply?: (payload: { text: string }) => Promise<void> | void;
+  dispatcher: {
+    sendFinalReply: (payload: { text?: string }) => boolean | Promise<boolean>;
   };
   replyOptions?: {
     onReasoningStream?: () => Promise<void> | void;
@@ -42,7 +42,7 @@ type DispatchInboundParams = {
       status: "queued" | "skipped" | "dropped" | "merged" | "failed";
       reason: string;
     }) => Promise<void> | void;
-    onPartialReply?: (payload: { text: string }) => Promise<void> | void;
+    onPartialReply?: (payload: { text?: string }) => Promise<void> | void;
     onAssistantMessageStart?: () => Promise<void> | void;
     onReasoningEnd?: () => Promise<void> | void;
   };
@@ -81,6 +81,7 @@ const onAgentEvent = vi.fn((listener: typeof agentEventListener) => {
 vi.mock("../send.js", () => ({
   reactMessageDiscord: sendMocks.reactMessageDiscord,
   removeReactionDiscord: sendMocks.removeReactionDiscord,
+  editMessageDiscord: deliveryMocks.editMessageDiscord,
 }));
 
 vi.mock("../send.messages.js", () => ({
@@ -99,18 +100,30 @@ vi.mock("../../auto-reply/dispatch.js", () => ({
 }));
 
 vi.mock("../../auto-reply/reply/reply-dispatcher.js", () => ({
-  createReplyDispatcherWithTyping: vi.fn(() => ({
-    dispatcher: {
-      sendToolResult: vi.fn(() => true),
-      sendBlockReply: vi.fn(() => true),
-      sendFinalReply: vi.fn(() => true),
-      waitForIdle: vi.fn(async () => {}),
-      getQueuedCounts: vi.fn(() => ({ tool: 0, block: 0, final: 0 })),
-      markComplete: vi.fn(),
+  createReplyDispatcherWithTyping: vi.fn(
+    (opts: { deliver: (payload: unknown, info: { kind: string }) => Promise<void> | void }) => {
+      let pending: Promise<void> = Promise.resolve();
+      return {
+        dispatcher: {
+          sendToolResult: vi.fn(() => true),
+          sendBlockReply: vi.fn(() => true),
+          sendFinalReply: vi.fn((payload: unknown) => {
+            pending = pending.then(async () => {
+              await opts.deliver(payload as never, { kind: "final" });
+            });
+            return true;
+          }),
+          waitForIdle: vi.fn(async () => {
+            await pending;
+          }),
+          getQueuedCounts: vi.fn(() => ({ tool: 0, block: 0, final: 0 })),
+          markComplete: vi.fn(),
+        },
+        replyOptions: {},
+        markDispatchIdle: vi.fn(),
+      };
     },
-    replyOptions: {},
-    markDispatchIdle: vi.fn(),
-  })),
+  ),
 }));
 
 vi.mock("../../channels/session.js", () => ({
@@ -1287,7 +1300,7 @@ describe("processDiscordMessage session routing", () => {
 describe("processDiscordMessage draft streaming", () => {
   async function runSingleChunkFinalScenario(discordConfig: Record<string, unknown>) {
     dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
-      await params?.dispatcher?.sendFinalReply?.({ text: "Hello\nWorld" });
+      await params?.dispatcher.sendFinalReply({ text: "Hello\nWorld" });
       return { queuedFinal: true, counts: { final: 1, tool: 0, block: 0 } };
     });
 
