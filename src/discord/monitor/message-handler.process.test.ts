@@ -31,6 +31,9 @@ const createDiscordDraftStream = deliveryMocks.createDiscordDraftStream;
 const reactMessageDiscord = sendMocks.reactMessageDiscord;
 const removeReactionDiscord = sendMocks.removeReactionDiscord;
 type DispatchInboundParams = {
+  dispatcher?: {
+    sendFinalReply?: (payload: { text: string }) => Promise<void> | void;
+  };
   replyOptions?: {
     onReasoningStream?: () => Promise<void> | void;
     onToolStart?: (payload: { name?: string }) => Promise<void> | void;
@@ -39,6 +42,9 @@ type DispatchInboundParams = {
       status: "queued" | "skipped" | "dropped" | "merged" | "failed";
       reason: string;
     }) => Promise<void> | void;
+    onPartialReply?: (payload: { text: string }) => Promise<void> | void;
+    onAssistantMessageStart?: () => Promise<void> | void;
+    onReasoningEnd?: () => Promise<void> | void;
   };
 };
 const dispatchInboundMessage = vi.fn(async (_params?: DispatchInboundParams) => ({
@@ -1281,7 +1287,7 @@ describe("processDiscordMessage session routing", () => {
 describe("processDiscordMessage draft streaming", () => {
   async function runSingleChunkFinalScenario(discordConfig: Record<string, unknown>) {
     dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
-      await params?.dispatcher.sendFinalReply({ text: "Hello\nWorld" });
+      await params?.dispatcher?.sendFinalReply?.({ text: "Hello\nWorld" });
       return { queuedFinal: true, counts: { final: 1, tool: 0, block: 0 } };
     });
 
