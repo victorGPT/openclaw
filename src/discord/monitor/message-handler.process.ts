@@ -615,8 +615,9 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   });
   const removeAckAfterReply = cfg.messages?.removeAckAfterReply ?? false;
   const statusTransitionsConfigured = cfg.messages?.statusReactions?.enabled !== false;
-  const statusTransitionMode: DiscordStatusTransitionMode =
-    statusTransitionsConfigured ? "full" : "ack-only";
+  const statusTransitionMode: DiscordStatusTransitionMode = statusTransitionsConfigured
+    ? "full"
+    : "ack-only";
   const shouldAckReaction = () =>
     Boolean(
       ackReaction &&
