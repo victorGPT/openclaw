@@ -18,6 +18,7 @@ import { logTypingFailure, logAckFailure } from "../../channels/logging.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { recordInboundSession } from "../../channels/session.js";
 import { createTypingCallbacks } from "../../channels/typing.js";
+import { isDangerousNameMatchingEnabled } from "../../config/dangerous-name-matching.js";
 import { resolveDiscordPreviewStreamMode } from "../../config/discord-preview-streaming.js";
 import { resolveMarkdownTableMode } from "../../config/markdown-tables.js";
 import { loadSessionStore, readSessionUpdatedAt, resolveStorePath } from "../../config/sessions.js";
@@ -28,6 +29,7 @@ import { getQueueSize } from "../../process/command-queue.js";
 import { buildAgentSessionKey } from "../../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../../routing/session-key.js";
 import { buildUntrustedChannelMetadata } from "../../security/channel-metadata.js";
+import { stripReasoningTagsFromText } from "../../shared/text/reasoning-tags.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { chunkDiscordTextWithMode } from "../chunk.js";
 import { resolveDiscordDraftStreamingChunking } from "../draft-chunking.js";
@@ -703,6 +705,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     channelConfig,
     guildInfo,
     sender: { id: sender.id, name: sender.name, tag: sender.tag },
+    allowNameMatching: isDangerousNameMatchingEnabled(discordConfig),
   });
   const envelopeOptions = resolveEnvelopeFormatOptions(cfg);
   const previousTimestamp = readSessionUpdatedAt({
@@ -984,7 +987,13 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     if (!draftStream || !text) {
       return;
     }
-    if (text === lastPartialText) {
+    // Strip reasoning/thinking tags that may leak through the stream.
+    const cleaned = stripReasoningTagsFromText(text, { mode: "strict", trim: "both" });
+    // Skip pure-reasoning messages (e.g. "Reasoning:\n…") that contain no answer text.
+    if (!cleaned || cleaned.startsWith("Reasoning:\n")) {
+      return;
+    }
+    if (cleaned === lastPartialText) {
       return;
     }
     hasStreamedMessage = true;
@@ -992,30 +1001,30 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       // Keep the longer preview to avoid visible punctuation flicker.
       if (
         lastPartialText &&
-        lastPartialText.startsWith(text) &&
-        text.length < lastPartialText.length
+        lastPartialText.startsWith(cleaned) &&
+        cleaned.length < lastPartialText.length
       ) {
         return;
       }
-      lastPartialText = text;
-      draftStream.update(text);
+      lastPartialText = cleaned;
+      draftStream.update(cleaned);
       return;
     }
 
-    let delta = text;
-    if (text.startsWith(lastPartialText)) {
-      delta = text.slice(lastPartialText.length);
+    let delta = cleaned;
+    if (cleaned.startsWith(lastPartialText)) {
+      delta = cleaned.slice(lastPartialText.length);
     } else {
       // Streaming buffer reset (or non-monotonic stream). Start fresh.
       draftChunker?.reset();
       draftText = "";
     }
-    lastPartialText = text;
+    lastPartialText = cleaned;
     if (!delta) {
       return;
     }
     if (!draftChunker) {
-      draftText = text;
+      draftText = cleaned;
       draftStream.update(draftText);
       return;
     }
@@ -1060,6 +1069,11 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     humanDelay: resolveHumanDelayConfig(cfg, route.agentId),
     deliver: async (payload: ReplyPayload, info) => {
       const isFinal = info.kind === "final";
+      if (info.kind === "block") {
+        // Block payloads carry reasoning/thinking content that should not be
+        // delivered to external channels. Skip them regardless of streamMode.
+        return;
+      }
       if (draftStream && isFinal) {
         await flushDraft();
         const hasMedia = Boolean(payload.mediaUrl) || (payload.mediaUrls?.length ?? 0) > 0;
