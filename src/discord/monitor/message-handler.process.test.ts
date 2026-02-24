@@ -102,34 +102,24 @@ vi.mock("../../auto-reply/dispatch.js", () => ({
 
 vi.mock("../../auto-reply/reply/reply-dispatcher.js", () => ({
   createReplyDispatcherWithTyping: vi.fn(
-    (opts: { deliver: (payload: unknown, info: { kind: string }) => Promise<void> | void }) => {
-      let pending: Promise<void> = Promise.resolve();
-      const enqueueDeliver = (payload: unknown, kind: "block" | "final") => {
-        pending = pending.then(async () => {
-          await opts.deliver(payload as never, { kind });
-        });
-      };
-      return {
-        dispatcher: {
-          sendToolResult: vi.fn(() => true),
-          sendBlockReply: vi.fn((payload: unknown) => {
-            enqueueDeliver(payload, "block");
-            return true;
-          }),
-          sendFinalReply: vi.fn((payload: unknown) => {
-            enqueueDeliver(payload, "final");
-            return true;
-          }),
-          waitForIdle: vi.fn(async () => {
-            await pending;
-          }),
-          getQueuedCounts: vi.fn(() => ({ tool: 0, block: 0, final: 0 })),
-          markComplete: vi.fn(),
-        },
-        replyOptions: {},
-        markDispatchIdle: vi.fn(),
-      };
-    },
+    (opts: { deliver: (payload: unknown, info: { kind: string }) => Promise<void> | void }) => ({
+      dispatcher: {
+        sendToolResult: vi.fn(() => true),
+        sendBlockReply: vi.fn((payload: unknown) => {
+          void opts.deliver(payload as never, { kind: "block" });
+          return true;
+        }),
+        sendFinalReply: vi.fn((payload: unknown) => {
+          void opts.deliver(payload as never, { kind: "final" });
+          return true;
+        }),
+        waitForIdle: vi.fn(async () => {}),
+        getQueuedCounts: vi.fn(() => ({ tool: 0, block: 0, final: 0 })),
+        markComplete: vi.fn(),
+      },
+      replyOptions: {},
+      markDispatchIdle: vi.fn(),
+    }),
   ),
 }));
 
