@@ -10,9 +10,41 @@ import {
   waitForQueueDebounce,
 } from "../../../utils/queue-helpers.js";
 import { isRoutableChannel } from "../route-reply.js";
-import { emitFollowupQueueOutcome } from "./outcome.js";
 import { FOLLOWUP_QUEUES } from "./state.js";
 import type { FollowupRun } from "./types.js";
+
+type OriginRoutingMetadata = Pick<
+  FollowupRun,
+  "originatingChannel" | "originatingTo" | "originatingAccountId" | "originatingThreadId"
+>;
+
+function resolveOriginRoutingMetadata(items: FollowupRun[]): OriginRoutingMetadata {
+  return {
+    originatingChannel: items.find((item) => item.originatingChannel)?.originatingChannel,
+    originatingTo: items.find((item) => item.originatingTo)?.originatingTo,
+    originatingAccountId: items.find((item) => item.originatingAccountId)?.originatingAccountId,
+    // Support both number (Telegram topic) and string (Slack thread_ts) thread IDs.
+    originatingThreadId: items.find(
+      (item) => item.originatingThreadId != null && item.originatingThreadId !== "",
+    )?.originatingThreadId,
+  };
+}
+
+function resolveCrossChannelKey(item: FollowupRun): { cross?: true; key?: string } {
+  const { originatingChannel: channel, originatingTo: to, originatingAccountId: accountId } = item;
+  const threadId = item.originatingThreadId;
+  if (!channel && !to && !accountId && (threadId == null || threadId === "")) {
+    return {};
+  }
+  if (!isRoutableChannel(channel) || !to) {
+    return { cross: true };
+  }
+  // Support both number (Telegram topic IDs) and string (Slack thread_ts) thread IDs.
+  const threadKey = threadId != null && threadId !== "" ? String(threadId) : "";
+  return {
+    key: [channel, to, accountId || "", threadKey].join("|"),
+  };
+}
 
 export function scheduleFollowupDrain(
   key: string,
@@ -34,23 +66,7 @@ export function scheduleFollowupDrain(
           // Debug: `pnpm test src/auto-reply/reply/reply-flow.test.ts`
           // Check if messages span multiple channels.
           // If so, process individually to preserve per-message routing.
-          const isCrossChannel = hasCrossChannelItems(queue.items, (item) => {
-            const channel = item.originatingChannel;
-            const to = item.originatingTo;
-            const accountId = item.originatingAccountId;
-            const threadId = item.originatingThreadId;
-            if (!channel && !to && !accountId && (threadId == null || threadId === "")) {
-              return {};
-            }
-            if (!isRoutableChannel(channel) || !to) {
-              return { cross: true };
-            }
-            // Support both number (Telegram topic IDs) and string (Slack thread_ts) thread IDs.
-            const threadKey = threadId != null && threadId !== "" ? String(threadId) : "";
-            return {
-              key: [channel, to, accountId || "", threadKey].join("|"),
-            };
-          });
+          const isCrossChannel = hasCrossChannelItems(queue.items, resolveCrossChannelKey);
 
           const collectDrainResult = await drainCollectQueueStep({
             collectState,
@@ -68,21 +84,11 @@ export function scheduleFollowupDrain(
           const items = queue.items.slice();
           const summary = previewQueueSummaryPrompt({ state: queue, noun: "message" });
           const run = items.at(-1)?.run ?? queue.lastRun;
-          const mergedIntoRunId = run?.runId?.trim();
           if (!run) {
             break;
           }
 
-          // Preserve originating channel from items when collecting same-channel.
-          const originatingChannel = items.find((i) => i.originatingChannel)?.originatingChannel;
-          const originatingTo = items.find((i) => i.originatingTo)?.originatingTo;
-          const originatingAccountId = items.find(
-            (i) => i.originatingAccountId,
-          )?.originatingAccountId;
-          // Support both number (Telegram topic) and string (Slack thread_ts) thread IDs.
-          const originatingThreadId = items.find(
-            (i) => i.originatingThreadId != null && i.originatingThreadId !== "",
-          )?.originatingThreadId;
+          const routing = resolveOriginRoutingMetadata(items);
 
           const prompt = buildCollectPrompt({
             title: "[Queued messages while agent was busy]",
@@ -90,23 +96,11 @@ export function scheduleFollowupDrain(
             summary,
             renderItem: (item, idx) => `---\nQueued #${idx + 1}\n${item.prompt}`.trim(),
           });
-          const mergedOutcomeReason = mergedIntoRunId
-            ? `collect-merged-into:${mergedIntoRunId}`
-            : "collect-merged";
-          for (const item of items.slice(0, -1)) {
-            emitFollowupQueueOutcome(item, "merged", mergedOutcomeReason);
-          }
-          const retainedRun = items.at(-1);
           await runFollowup({
             prompt,
             run,
             enqueuedAt: Date.now(),
-            queueManaged: true,
-            onQueueOutcome: retainedRun?.onQueueOutcome,
-            originatingChannel,
-            originatingTo,
-            originatingAccountId,
-            originatingThreadId,
+            ...routing,
           });
           queue.items.splice(0, items.length);
           if (summary) {
@@ -117,14 +111,16 @@ export function scheduleFollowupDrain(
 
         const summaryPrompt = previewQueueSummaryPrompt({ state: queue, noun: "message" });
         if (summaryPrompt) {
+          const run = queue.lastRun;
+          if (!run) {
+            break;
+          }
           if (
             !(await drainNextQueueItem(queue.items, async (item) => {
               await runFollowup({
                 prompt: summaryPrompt,
-                run: item.run,
+                run,
                 enqueuedAt: Date.now(),
-                queueManaged: true,
-                onQueueOutcome: item.onQueueOutcome,
                 originatingChannel: item.originatingChannel,
                 originatingTo: item.originatingTo,
                 originatingAccountId: item.originatingAccountId,
