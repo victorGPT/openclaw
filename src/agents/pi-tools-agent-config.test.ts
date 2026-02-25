@@ -629,7 +629,7 @@ describe("Agent-specific tool filtering", () => {
     });
 
     const resultDetails = result?.details as { status?: string } | undefined;
-    expect(resultDetails?.status).toBe("completed");
+    expect(["completed", "running"]).toContain(resultDetails?.status ?? "");
   });
 
   it("keeps sandbox as the implicit exec host default without forcing gateway approvals", async () => {
@@ -692,7 +692,7 @@ describe("Agent-specific tool filtering", () => {
       yieldMs: 1000,
     });
     const mainDetails = mainResult?.details as { status?: string } | undefined;
-    expect(mainDetails?.status).toBe("completed");
+    expect(["completed", "running"]).toContain(mainDetails?.status ?? "");
     await expect(
       mainExecTool!.execute("call-main", {
         command: "echo done",

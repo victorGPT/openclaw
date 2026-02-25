@@ -403,6 +403,7 @@ export async function runPreparedReply(
     });
   }
   const sessionIdFinal = sessionId ?? crypto.randomUUID();
+  const followupRunId = crypto.randomUUID();
   const sessionFile = resolveSessionFilePath(
     sessionIdFinal,
     sessionEntry,
@@ -457,6 +458,7 @@ export async function runPreparedReply(
     originatingThreadId: ctx.MessageThreadId,
     originatingChatType: ctx.ChatType,
     run: {
+      runId: followupRunId,
       agentId,
       agentDir,
       sessionId: sessionIdFinal,

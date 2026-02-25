@@ -1,4 +1,4 @@
-import { applyQueueRuntimeSettings } from "../../../utils/queue-helpers.js";
+import { emitFollowupQueueOutcome } from "./outcome.js";
 import type { FollowupRun, QueueDropPolicy, QueueMode, QueueSettings } from "./types.js";
 
 export type FollowupQueueState = {
@@ -31,10 +31,16 @@ export function getExistingFollowupQueue(key: string): FollowupQueueState | unde
 export function getFollowupQueue(key: string, settings: QueueSettings): FollowupQueueState {
   const existing = FOLLOWUP_QUEUES.get(key);
   if (existing) {
-    applyQueueRuntimeSettings({
-      target: existing,
-      settings,
-    });
+    existing.mode = settings.mode;
+    existing.debounceMs =
+      typeof settings.debounceMs === "number"
+        ? Math.max(0, settings.debounceMs)
+        : existing.debounceMs;
+    existing.cap =
+      typeof settings.cap === "number" && settings.cap > 0
+        ? Math.floor(settings.cap)
+        : existing.cap;
+    existing.dropPolicy = settings.dropPolicy ?? existing.dropPolicy;
     return existing;
   }
 
@@ -55,10 +61,6 @@ export function getFollowupQueue(key: string, settings: QueueSettings): Followup
     droppedCount: 0,
     summaryLines: [],
   };
-  applyQueueRuntimeSettings({
-    target: created,
-    settings,
-  });
   FOLLOWUP_QUEUES.set(key, created);
   return created;
 }
@@ -69,7 +71,11 @@ export function clearFollowupQueue(key: string): number {
   if (!queue) {
     return 0;
   }
-  const cleared = queue.items.length + queue.droppedCount;
+  const clearedItems = queue.items.slice();
+  const cleared = clearedItems.length + queue.droppedCount;
+  for (const run of clearedItems) {
+    emitFollowupQueueOutcome(run, "failed", "queue-cleared");
+  }
   queue.items.length = 0;
   queue.droppedCount = 0;
   queue.summaryLines = [];

@@ -697,6 +697,27 @@ Default slash command settings:
 
     - Discord accepts unicode emoji or custom emoji names.
     - Use `""` to disable the reaction for a channel or account.
+    - `messages.statusReactionMode` controls status flow behavior:
+      - `full` (default): keep intermediate states (🧠/💻/🌐/🛠️/✅/❌/⏳/⚠️)
+      - `off`: keep only initial ack reaction (no intermediate/terminal transitions)
+
+    Quick config examples:
+
+```json5
+{
+  messages: {
+    statusReactionMode: "off",
+  },
+}
+```
+
+```json5
+{
+  messages: {
+    statusReactionMode: "full",
+  },
+}
+```
 
   </Accordion>
 
