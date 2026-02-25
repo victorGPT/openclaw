@@ -334,6 +334,32 @@ function resolvePackageEntrySource(params: {
   return source;
 }
 
+function resolveDirectoryEntryKind(params: {
+  entry: fs.Dirent;
+  fullPath: string;
+}): "file" | "directory" | null {
+  if (params.entry.isFile()) {
+    return "file";
+  }
+  if (params.entry.isDirectory()) {
+    return "directory";
+  }
+  if (!params.entry.isSymbolicLink()) {
+    return null;
+  }
+  const stat = safeStatSync(params.fullPath);
+  if (!stat) {
+    return null;
+  }
+  if (stat.isFile()) {
+    return "file";
+  }
+  if (stat.isDirectory()) {
+    return "directory";
+  }
+  return null;
+}
+
 function discoverInDirectory(params: {
   dir: string;
   origin: PluginOrigin;
@@ -360,7 +386,11 @@ function discoverInDirectory(params: {
 
   for (const entry of entries) {
     const fullPath = path.join(params.dir, entry.name);
-    if (entry.isFile()) {
+    const entryKind = resolveDirectoryEntryKind({
+      entry,
+      fullPath,
+    });
+    if (entryKind === "file") {
       if (!isExtensionFile(fullPath)) {
         continue;
       }
@@ -376,7 +406,7 @@ function discoverInDirectory(params: {
         workspaceDir: params.workspaceDir,
       });
     }
-    if (!entry.isDirectory()) {
+    if (entryKind !== "directory") {
       continue;
     }
     if (shouldIgnoreScannedDirectory(entry.name)) {

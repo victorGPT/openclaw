@@ -26,6 +26,27 @@ async function withStateDir<T>(stateDir: string, fn: () => Promise<T>) {
   );
 }
 
+function tryCreateSymlink(params: {
+  targetPath: string;
+  linkPath: string;
+  type: "file" | "dir";
+}): boolean {
+  try {
+    if (params.type === "dir") {
+      fs.symlinkSync(
+        params.targetPath,
+        params.linkPath,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      return true;
+    }
+    fs.symlinkSync(params.targetPath, params.linkPath, "file");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     try {
@@ -56,6 +77,77 @@ describe("discoverOpenClawPlugins", () => {
     const ids = candidates.map((c) => c.idHint);
     expect(ids).toContain("alpha");
     expect(ids).toContain("beta");
+  });
+
+  it("discovers symlinked extension files in scanned roots", async () => {
+    const stateDir = makeTempDir();
+    const globalExt = path.join(stateDir, "extensions");
+    fs.mkdirSync(globalExt, { recursive: true });
+
+    const realSource = path.join(globalExt, "alpha.ts");
+    fs.writeFileSync(realSource, "export default function () {}", "utf-8");
+
+    const linkedSource = path.join(globalExt, "alpha-link.ts");
+    if (!tryCreateSymlink({ targetPath: realSource, linkPath: linkedSource, type: "file" })) {
+      return;
+    }
+
+    const { candidates } = await withStateDir(stateDir, async () => {
+      return discoverOpenClawPlugins({});
+    });
+
+    const ids = candidates.map((c) => c.idHint);
+    expect(ids).toContain("alpha-link");
+  });
+
+  it("discovers symlinked extension directories in scanned roots", async () => {
+    const stateDir = makeTempDir();
+    const globalExt = path.join(stateDir, "extensions");
+    fs.mkdirSync(globalExt, { recursive: true });
+
+    const realPluginDir = path.join(stateDir, "real-plugin-dir");
+    fs.mkdirSync(realPluginDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(realPluginDir, "index.ts"),
+      "export default function () {}",
+      "utf-8",
+    );
+
+    const linkedPluginDir = path.join(globalExt, "linked-plugin");
+    if (!tryCreateSymlink({ targetPath: realPluginDir, linkPath: linkedPluginDir, type: "dir" })) {
+      return;
+    }
+
+    const { candidates } = await withStateDir(stateDir, async () => {
+      return discoverOpenClawPlugins({});
+    });
+
+    const ids = candidates.map((c) => c.idHint);
+    expect(ids).toContain("linked-plugin");
+  });
+
+  it("ignores broken symlink entries while scanning extension roots", async () => {
+    const stateDir = makeTempDir();
+    const globalExt = path.join(stateDir, "extensions");
+    fs.mkdirSync(globalExt, { recursive: true });
+
+    const missingSource = path.join(stateDir, "missing", "broken.ts");
+    const brokenLink = path.join(globalExt, "broken-link.ts");
+    if (!tryCreateSymlink({ targetPath: missingSource, linkPath: brokenLink, type: "file" })) {
+      return;
+    }
+
+    const { candidates, diagnostics } = await withStateDir(stateDir, async () => {
+      return discoverOpenClawPlugins({});
+    });
+
+    const ids = candidates.map((candidate) => candidate.idHint);
+    expect(ids).not.toContain("broken-link");
+    expect(
+      diagnostics.some(
+        (diagnostic) => diagnostic.source === brokenLink || diagnostic.source === missingSource,
+      ),
+    ).toBe(false);
   });
 
   it("ignores backup and disabled plugin directories in scanned roots", async () => {
