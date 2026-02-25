@@ -5,9 +5,16 @@ import {
   createThreadBindingManager,
 } from "./thread-bindings.js";
 
+type ReactionMutationMock = (
+  channelId: string,
+  messageId: string,
+  emoji: string,
+  opts?: unknown,
+) => Promise<void>;
+
 const sendMocks = vi.hoisted(() => ({
-  reactMessageDiscord: vi.fn(async () => {}),
-  removeReactionDiscord: vi.fn(async () => {}),
+  reactMessageDiscord: vi.fn<ReactionMutationMock>(async () => {}),
+  removeReactionDiscord: vi.fn<ReactionMutationMock>(async () => {}),
 }));
 function createMockDraftStream() {
   return {
@@ -351,9 +358,11 @@ describe("processDiscordMessage ack reactions", () => {
 
   it("re-applies active emoji when stale async cleanup resolves after rapid toggle", async () => {
     vi.useFakeTimers();
-    let releaseStaleCleanup: (() => void) | null = null;
+    let releaseStaleCleanup: (() => void) | undefined;
     const staleCleanupGate = new Promise<void>((resolve) => {
-      releaseStaleCleanup = resolve;
+      releaseStaleCleanup = () => {
+        resolve();
+      };
     });
     removeReactionDiscord.mockImplementation(async (_channelId, _messageId, emoji: string) => {
       if (emoji === "💻") {

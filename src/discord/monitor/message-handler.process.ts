@@ -317,9 +317,9 @@ function createDiscordStatusReactionController(params: {
     stallSoft: params.emojis?.stallSoft || DISCORD_STATUS_STALL_SOFT_EMOJI,
     stallHard: params.emojis?.stallHard || DISCORD_STATUS_STALL_HARD_EMOJI,
   };
-  const hasCustomDebounce =
-    typeof params.timing?.debounceMs === "number" && params.timing.debounceMs >= 0;
-  const debounceMs = hasCustomDebounce ? params.timing.debounceMs : DISCORD_STATUS_DEBOUNCE_MS;
+  const customDebounceMs = params.timing?.debounceMs;
+  const hasCustomDebounce = typeof customDebounceMs === "number" && customDebounceMs >= 0;
+  const debounceMs = hasCustomDebounce ? customDebounceMs : DISCORD_STATUS_DEBOUNCE_MS;
   const toolDebounceMs = hasCustomDebounce
     ? debounceMs
     : Math.max(debounceMs, DISCORD_STATUS_TOOL_DEBOUNCE_FLOOR_MS);
