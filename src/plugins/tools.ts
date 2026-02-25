@@ -46,7 +46,7 @@ export function resolvePluginTools(params: {
   context: OpenClawPluginToolContext;
   existingToolNames?: Set<string>;
   toolAllowlist?: string[];
-  suppressNameConflicts?: boolean;
+  refreshToolSchema?: boolean;
 }): AnyAgentTool[] {
   // Fast path: when plugins are effectively disabled, avoid discovery/jiti entirely.
   // This matters a lot for unit tests and for tool construction hot paths.
@@ -60,6 +60,7 @@ export function resolvePluginTools(params: {
     config: effectiveConfig,
     workspaceDir: params.context.workspaceDir,
     logger: createPluginLoaderLogger(log),
+    ...(params.refreshToolSchema ? { refresh: true } : {}),
   });
 
   const tools: AnyAgentTool[] = [];
@@ -75,15 +76,13 @@ export function resolvePluginTools(params: {
     const pluginIdKey = normalizeToolName(entry.pluginId);
     if (existingNormalized.has(pluginIdKey)) {
       const message = `plugin id conflicts with core tool name (${entry.pluginId})`;
-      if (!params.suppressNameConflicts) {
-        log.error(message);
-        registry.diagnostics.push({
-          level: "error",
-          pluginId: entry.pluginId,
-          source: entry.source,
-          message,
-        });
-      }
+      log.error(message);
+      registry.diagnostics.push({
+        level: "error",
+        pluginId: entry.pluginId,
+        source: entry.source,
+        message,
+      });
       blockedPlugins.add(entry.pluginId);
       continue;
     }
@@ -114,15 +113,13 @@ export function resolvePluginTools(params: {
     for (const tool of list) {
       if (nameSet.has(tool.name) || existing.has(tool.name)) {
         const message = `plugin tool name conflict (${entry.pluginId}): ${tool.name}`;
-        if (!params.suppressNameConflicts) {
-          log.error(message);
-          registry.diagnostics.push({
-            level: "error",
-            pluginId: entry.pluginId,
-            source: entry.source,
-            message,
-          });
-        }
+        log.error(message);
+        registry.diagnostics.push({
+          level: "error",
+          pluginId: entry.pluginId,
+          source: entry.source,
+          message,
+        });
         continue;
       }
       nameSet.add(tool.name);
