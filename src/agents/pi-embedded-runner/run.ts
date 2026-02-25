@@ -1,19 +1,16 @@
-import { randomBytes } from "node:crypto";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
-import { generateSecureToken } from "../../infra/secure-random.js";
+import type { SessionSystemPromptReport } from "../../config/sessions/types.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
-import type { PluginHookBeforeAgentStartResult } from "../../plugins/types.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
-import { hasConfiguredModelFallbacks } from "../agent-scope.js";
 import {
   isProfileInCooldown,
   markAuthProfileFailure,
   markAuthProfileGood,
   markAuthProfileUsed,
-  resolveProfilesUnavailableReason,
 } from "../auth-profiles.js";
 import {
   CONTEXT_WINDOW_HARD_MIN_TOKENS,
@@ -80,6 +77,52 @@ function scrubAnthropicRefusalMagic(prompt: string): string {
   );
 }
 
+type ToolSchemaSnapshot = {
+  toolCount: number;
+  schemaChars: number;
+  listChars: number;
+  fingerprint: string;
+};
+
+type UnknownToolErrorSource = "promptError" | "assistantError";
+
+function isUnknownToolFailure(text?: string): boolean {
+  const message = text?.trim();
+  if (!message) {
+    return false;
+  }
+  return (
+    /unknown tool[:\s]+["']?[a-z0-9_-]+["']?/i.test(message) ||
+    /tool\s+["']?[a-z0-9_-]+["']?\s+(?:not found|is not available)/i.test(message) ||
+    /tool_choice requested unknown tool/i.test(message)
+  );
+}
+
+function snapshotToolSchema(report?: SessionSystemPromptReport): ToolSchemaSnapshot {
+  const entries = report?.tools?.entries ?? [];
+  const serializedEntries = entries
+    .map((entry) =>
+      JSON.stringify({
+        name: entry.name,
+        summaryChars: entry.summaryChars,
+        schemaChars: entry.schemaChars,
+        propertiesCount: entry.propertiesCount ?? null,
+      }),
+    )
+    .toSorted();
+  const fingerprint = crypto
+    .createHash("sha256")
+    .update(serializedEntries.join("|"))
+    .digest("hex")
+    .slice(0, 12);
+  return {
+    toolCount: entries.length,
+    schemaChars: report?.tools?.schemaChars ?? 0,
+    listChars: report?.tools?.listChars ?? 0,
+    fingerprint,
+  };
+}
+
 type UsageAccumulator = {
   input: number;
   output: number;
@@ -104,7 +147,7 @@ const createUsageAccumulator = (): UsageAccumulator => ({
 });
 
 function createCompactionDiagId(): string {
-  return `ovf-${Date.now().toString(36)}-${generateSecureToken(4)}`;
+  return `ovf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 // Defensive guard for the outer run loop across all retry branches.
@@ -231,11 +274,8 @@ export async function runEmbeddedPiAgent(
       let provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
       let modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
       const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
-      const fallbackConfigured = hasConfiguredModelFallbacks({
-        cfg: params.config,
-        agentId: params.agentId,
-        sessionKey: params.sessionKey,
-      });
+      const fallbackConfigured =
+        (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
       await ensureOpenClawModelsJson(params.config, agentDir);
 
       // Run before_model_resolve hooks early so plugins can override the
@@ -244,7 +284,6 @@ export async function runEmbeddedPiAgent(
       // Legacy compatibility: before_agent_start is also checked for override
       // fields if present. New hook takes precedence when both are set.
       let modelResolveOverride: { providerOverride?: string; modelOverride?: string } | undefined;
-      let legacyBeforeAgentStartResult: PluginHookBeforeAgentStartResult | undefined;
       const hookRunner = getGlobalHookRunner();
       const hookCtx = {
         agentId: workspaceResolution.agentId,
@@ -265,16 +304,14 @@ export async function runEmbeddedPiAgent(
       }
       if (hookRunner?.hasHooks("before_agent_start")) {
         try {
-          legacyBeforeAgentStartResult = await hookRunner.runBeforeAgentStart(
+          const legacyResult = await hookRunner.runBeforeAgentStart(
             { prompt: params.prompt },
             hookCtx,
           );
           modelResolveOverride = {
             providerOverride:
-              modelResolveOverride?.providerOverride ??
-              legacyBeforeAgentStartResult?.providerOverride,
-            modelOverride:
-              modelResolveOverride?.modelOverride ?? legacyBeforeAgentStartResult?.modelOverride,
+              modelResolveOverride?.providerOverride ?? legacyResult?.providerOverride,
+            modelOverride: modelResolveOverride?.modelOverride ?? legacyResult?.modelOverride,
           };
         } catch (hookErr) {
           log.warn(
@@ -369,18 +406,9 @@ export async function runEmbeddedPiAgent(
       const resolveAuthProfileFailoverReason = (params: {
         allInCooldown: boolean;
         message: string;
-        profileIds?: Array<string | undefined>;
       }): FailoverReason => {
         if (params.allInCooldown) {
-          const profileIds = (params.profileIds ?? profileCandidates).filter(
-            (id): id is string => typeof id === "string" && id.length > 0,
-          );
-          return (
-            resolveProfilesUnavailableReason({
-              store: authStore,
-              profileIds,
-            }) ?? "rate_limit"
-          );
+          return "rate_limit";
         }
         const classified = classifyFailoverReason(params.message);
         return classified ?? "auth";
@@ -399,7 +427,6 @@ export async function runEmbeddedPiAgent(
         const reason = resolveAuthProfileFailoverReason({
           allInCooldown: params.allInCooldown,
           message,
-          profileIds: profileCandidates,
         });
         if (fallbackConfigured) {
           throw new FailoverError(message, {
@@ -512,28 +539,18 @@ export async function runEmbeddedPiAgent(
       const MAX_RUN_LOOP_ITERATIONS = resolveMaxRunRetryIterations(profileCandidates.length);
       let overflowCompactionAttempts = 0;
       let toolResultTruncationAttempted = false;
+      let unknownToolRefreshRetried = false;
+      let refreshToolSchema = false;
+      let pendingToolSchemaComparison:
+        | {
+            before: ToolSchemaSnapshot;
+            source: UnknownToolErrorSource;
+          }
+        | undefined;
       const usageAccumulator = createUsageAccumulator();
       let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
       let autoCompactionCount = 0;
       let runLoopIterations = 0;
-      const maybeMarkAuthProfileFailure = async (failure: {
-        profileId?: string;
-        reason?: Parameters<typeof markAuthProfileFailure>[0]["reason"] | null;
-        config?: RunEmbeddedPiAgentParams["config"];
-        agentDir?: RunEmbeddedPiAgentParams["agentDir"];
-      }) => {
-        const { profileId, reason } = failure;
-        if (!profileId || !reason || reason === "timeout") {
-          return;
-        }
-        await markAuthProfileFailure({
-          store: authStore,
-          profileId,
-          reason,
-          cfg: params.config,
-          agentDir,
-        });
-      };
       try {
         while (true) {
           if (runLoopIterations >= MAX_RUN_LOOP_ITERATIONS) {
@@ -571,6 +588,8 @@ export async function runEmbeddedPiAgent(
 
           const prompt =
             provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt;
+          const refreshToolSchemaForAttempt = refreshToolSchema;
+          refreshToolSchema = false;
 
           const attempt = await runEmbeddedAttempt({
             sessionId: params.sessionId,
@@ -587,7 +606,6 @@ export async function runEmbeddedPiAgent(
             senderIsOwner: params.senderIsOwner,
             currentChannelId: params.currentChannelId,
             currentThreadTs: params.currentThreadTs,
-            currentMessageId: params.currentMessageId,
             replyToMode: params.replyToMode,
             hasRepliedRef: params.hasRepliedRef,
             sessionFile: params.sessionFile,
@@ -604,7 +622,6 @@ export async function runEmbeddedPiAgent(
             authStorage,
             modelRegistry,
             agentId: workspaceResolution.agentId,
-            legacyBeforeAgentStartResult,
             thinkLevel,
             verboseLevel: params.verboseLevel,
             reasoningLevel: params.reasoningLevel,
@@ -631,6 +648,7 @@ export async function runEmbeddedPiAgent(
             streamParams: params.streamParams,
             ownerNumbers: params.ownerNumbers,
             enforceFinalTag: params.enforceFinalTag,
+            refreshToolSchema: refreshToolSchemaForAttempt,
           });
 
           const {
@@ -667,6 +685,20 @@ export async function runEmbeddedPiAgent(
             lastAssistant?.stopReason === "error"
               ? lastAssistant.errorMessage?.trim() || formattedAssistantErrorText
               : undefined;
+          if (refreshToolSchemaForAttempt && pendingToolSchemaComparison) {
+            const after = snapshotToolSchema(attempt.systemPromptReport);
+            const before = pendingToolSchemaComparison.before;
+            const changed = before.fingerprint !== after.fingerprint;
+            log.info(
+              `[tool-schema-refresh] source=${pendingToolSchemaComparison.source} ` +
+                `beforeFingerprint=${before.fingerprint} afterFingerprint=${after.fingerprint} ` +
+                `beforeToolCount=${before.toolCount} afterToolCount=${after.toolCount} ` +
+                `beforeSchemaChars=${before.schemaChars} afterSchemaChars=${after.schemaChars} ` +
+                `beforeListChars=${before.listChars} afterListChars=${after.listChars} ` +
+                `changed=${changed ? "yes" : "no"}`,
+            );
+            pendingToolSchemaComparison = undefined;
+          }
 
           const contextOverflowError = !aborted
             ? (() => {
@@ -850,6 +882,47 @@ export async function runEmbeddedPiAgent(
             };
           }
 
+          const unknownToolError = !aborted
+            ? (() => {
+                if (promptError) {
+                  const errorText = describeUnknownError(promptError);
+                  if (isUnknownToolFailure(errorText)) {
+                    return {
+                      text: errorText,
+                      source: "promptError" as const,
+                    };
+                  }
+                  // Prompt submission failed with a non-unknown-tool error. Do not
+                  // inspect prior assistant errors from history for this attempt.
+                  return null;
+                }
+                if (assistantErrorText && isUnknownToolFailure(assistantErrorText)) {
+                  return {
+                    text: assistantErrorText,
+                    source: "assistantError" as const,
+                  };
+                }
+                return null;
+              })()
+            : null;
+          if (unknownToolError && !unknownToolRefreshRetried) {
+            unknownToolRefreshRetried = true;
+            refreshToolSchema = true;
+            const beforeSnapshot = snapshotToolSchema(attempt.systemPromptReport);
+            pendingToolSchemaComparison = {
+              before: beforeSnapshot,
+              source: unknownToolError.source,
+            };
+            log.warn(
+              `[tool-schema-refresh] unknown-tool detected source=${unknownToolError.source} ` +
+                `retry=1/1 bypassPluginCache=true ` +
+                `toolCount=${beforeSnapshot.toolCount} schemaChars=${beforeSnapshot.schemaChars} ` +
+                `listChars=${beforeSnapshot.listChars} fingerprint=${beforeSnapshot.fingerprint} ` +
+                `error=${unknownToolError.text.slice(0, 200)}`,
+            );
+            continue;
+          }
+
           if (promptError && !aborted) {
             const errorText = describeUnknownError(promptError);
             // Handle role ordering errors with a user-friendly message
@@ -904,10 +977,15 @@ export async function runEmbeddedPiAgent(
               };
             }
             const promptFailoverReason = classifyFailoverReason(errorText);
-            await maybeMarkAuthProfileFailure({
-              profileId: lastProfileId,
-              reason: promptFailoverReason,
-            });
+            if (promptFailoverReason && promptFailoverReason !== "timeout" && lastProfileId) {
+              await markAuthProfileFailure({
+                store: authStore,
+                profileId: lastProfileId,
+                reason: promptFailoverReason,
+                cfg: params.config,
+                agentDir: params.agentDir,
+              });
+            }
             if (
               isFailoverErrorMessage(errorText) &&
               promptFailoverReason !== "timeout" &&
@@ -979,8 +1057,8 @@ export async function runEmbeddedPiAgent(
             );
           }
 
-          // Rotate on timeout to try another account/model path in this turn,
-          // but exclude post-prompt compaction timeouts (model succeeded; no profile issue).
+          // Treat timeout as potential rate limit (Antigravity hangs on rate limit)
+          // But exclude post-prompt compaction timeouts (model succeeded; no profile issue)
           const shouldRotate =
             (!aborted && failoverFailure) || (timedOut && !timedOutDuringCompaction);
 
@@ -990,15 +1068,17 @@ export async function runEmbeddedPiAgent(
                 timedOut || assistantFailoverReason === "timeout"
                   ? "timeout"
                   : (assistantFailoverReason ?? "unknown");
-              // Skip cooldown for timeouts: a timeout is model/network-specific,
-              // not an auth issue. Marking the profile would poison fallback models
-              // on the same provider (e.g. gpt-5.3 timeout blocks gpt-5.2).
-              await maybeMarkAuthProfileFailure({
+              await markAuthProfileFailure({
+                store: authStore,
                 profileId: lastProfileId,
                 reason,
+                cfg: params.config,
+                agentDir: params.agentDir,
               });
               if (timedOut && !isProbeSession) {
-                log.warn(`Profile ${lastProfileId} timed out. Trying next account...`);
+                log.warn(
+                  `Profile ${lastProfileId} timed out (possible rate limit). Trying next account...`,
+                );
               }
               if (cloudCodeAssistFormatError) {
                 log.warn(
@@ -1084,7 +1164,6 @@ export async function runEmbeddedPiAgent(
             toolResultFormat: resolvedToolResultFormat,
             suppressToolErrorWarnings: params.suppressToolErrorWarnings,
             inlineToolResultsAllowed: false,
-            didSendViaMessagingTool: attempt.didSendViaMessagingTool,
           });
 
           // Timeout aborts can leave the run without any assistant payloads.
@@ -1142,7 +1221,7 @@ export async function runEmbeddedPiAgent(
               pendingToolCalls: attempt.clientToolCall
                 ? [
                     {
-                      id: randomBytes(5).toString("hex").slice(0, 9),
+                      id: `call_${Date.now()}`,
                       name: attempt.clientToolCall.name,
                       arguments: JSON.stringify(attempt.clientToolCall.params),
                     },

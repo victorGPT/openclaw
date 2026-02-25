@@ -52,28 +52,9 @@ function setRegistry(entries: MockRegistryToolEntry[]) {
   return registry;
 }
 
-function setMultiToolRegistry() {
-  return setRegistry([
-    {
-      pluginId: "multi",
-      optional: false,
-      source: "/tmp/multi.js",
-      factory: () => [makeTool("message"), makeTool("other_tool")],
-    },
-  ]);
-}
-
-function resolveWithConflictingCoreName(options?: { suppressNameConflicts?: boolean }) {
-  return resolvePluginTools({
-    context: createContext() as never,
-    existingToolNames: new Set(["message"]),
-    ...(options?.suppressNameConflicts ? { suppressNameConflicts: true } : {}),
-  });
-}
-
 describe("resolvePluginTools optional tools", () => {
   beforeEach(() => {
-    loadOpenClawPluginsMock.mockClear();
+    loadOpenClawPluginsMock.mockReset();
   });
 
   it("skips optional tools without explicit allowlist", () => {
@@ -155,19 +136,45 @@ describe("resolvePluginTools optional tools", () => {
   });
 
   it("skips conflicting tool names but keeps other tools", () => {
-    const registry = setMultiToolRegistry();
-    const tools = resolveWithConflictingCoreName();
+    const registry = setRegistry([
+      {
+        pluginId: "multi",
+        optional: false,
+        source: "/tmp/multi.js",
+        factory: () => [makeTool("message"), makeTool("other_tool")],
+      },
+    ]);
+
+    const tools = resolvePluginTools({
+      context: createContext() as never,
+      existingToolNames: new Set(["message"]),
+    });
 
     expect(tools.map((tool) => tool.name)).toEqual(["other_tool"]);
     expect(registry.diagnostics).toHaveLength(1);
     expect(registry.diagnostics[0]?.message).toContain("plugin tool name conflict");
   });
 
-  it("suppresses conflict diagnostics when requested", () => {
-    const registry = setMultiToolRegistry();
-    const tools = resolveWithConflictingCoreName({ suppressNameConflicts: true });
+  it("requests plugin registry refresh mode when refreshToolSchema is requested", () => {
+    setRegistry([
+      {
+        pluginId: "optional-demo",
+        optional: true,
+        source: "/tmp/optional-demo.js",
+        factory: () => makeTool("optional_tool"),
+      },
+    ]);
 
-    expect(tools.map((tool) => tool.name)).toEqual(["other_tool"]);
-    expect(registry.diagnostics).toHaveLength(0);
+    resolvePluginTools({
+      context: createContext() as never,
+      toolAllowlist: ["optional_tool"],
+      refreshToolSchema: true,
+    });
+
+    const loadArgs = loadOpenClawPluginsMock.mock.calls[0]?.[0] as
+      | { refresh?: boolean; cache?: boolean }
+      | undefined;
+    expect(loadArgs?.refresh).toBe(true);
+    expect(loadArgs?.cache).toBeUndefined();
   });
 });
