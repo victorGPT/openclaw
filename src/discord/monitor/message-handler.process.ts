@@ -401,15 +401,22 @@ function createDiscordStatusReactionController(params: {
       });
       activeEmoji = emoji;
       if (previousEmoji && previousEmoji !== emoji) {
-        try {
-          void removeReactionDiscord(params.channelId, params.messageId, previousEmoji, {
-            rest: params.rest as never,
-          }).catch((err) => {
+        const staleEmoji = previousEmoji;
+        void (async () => {
+          try {
+            await removeReactionDiscord(params.channelId, params.messageId, staleEmoji, {
+              rest: params.rest as never,
+            });
+            if (!params.enabled || activeEmoji !== staleEmoji) {
+              return;
+            }
+            await reactMessageDiscord(params.channelId, params.messageId, staleEmoji, {
+              rest: params.rest as never,
+            });
+          } catch (err) {
             handleError(err);
-          });
-        } catch (err) {
-          handleError(err);
-        }
+          }
+        })();
       }
     });
 

@@ -349,6 +349,61 @@ describe("processDiscordMessage ack reactions", () => {
     expect(removed).toContain("🤔");
   });
 
+  it("re-applies active emoji when stale async cleanup resolves after rapid toggle", async () => {
+    vi.useFakeTimers();
+    let releaseStaleCleanup: (() => void) | null = null;
+    const staleCleanupGate = new Promise<void>((resolve) => {
+      releaseStaleCleanup = resolve;
+    });
+    removeReactionDiscord.mockImplementation(async (_channelId, _messageId, emoji: string) => {
+      if (emoji === "💻") {
+        await staleCleanupGate;
+      }
+    });
+
+    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
+      await params?.replyOptions?.onToolStart?.({ name: "exec" });
+      await vi.advanceTimersByTimeAsync(200);
+      await params?.replyOptions?.onToolStart?.({ name: "web_fetch" });
+      await vi.advanceTimersByTimeAsync(200);
+      await params?.replyOptions?.onToolStart?.({ name: "exec" });
+      await params?.replyOptions?.onFollowupQueued?.({
+        runId: "run-stale-cleanup-race",
+        status: "queued",
+        reason: "test-keep-active-phase",
+      });
+      return { queuedFinal: false, counts: { final: 0, tool: 0, block: 0 } };
+    });
+
+    isEmbeddedPiRunActive.mockReturnValue(true);
+    loadSessionStore.mockReturnValueOnce({
+      "agent:main:discord:guild:g1": { sessionId: "sess1" },
+    });
+
+    const ctx = await createBaseContext({
+      cfg: {
+        messages: { ackReaction: "👀", removeAckAfterReply: true },
+        session: { store: "/tmp/openclaw-discord-process-test-sessions.json" },
+      },
+    });
+
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const runPromise = processDiscordMessage(ctx as any);
+    await vi.advanceTimersByTimeAsync(500);
+    await runPromise;
+
+    releaseStaleCleanup?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const reacted = (
+      reactMessageDiscord.mock.calls as unknown as Array<[unknown, unknown, string]>
+    ).map((call) => call[2]);
+
+    const codingEmojiCount = reacted.filter((emoji) => emoji === "💻").length;
+    expect(codingEmojiCount).toBeGreaterThanOrEqual(3);
+  });
+
   it("blocks active-to-waiting regression when queued signal arrives after tool start", async () => {
     vi.useFakeTimers();
     dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
