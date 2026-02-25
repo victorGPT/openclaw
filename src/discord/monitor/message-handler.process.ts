@@ -401,9 +401,15 @@ function createDiscordStatusReactionController(params: {
       });
       activeEmoji = emoji;
       if (previousEmoji && previousEmoji !== emoji) {
-        await removeReactionDiscord(params.channelId, params.messageId, previousEmoji, {
-          rest: params.rest as never,
-        });
+        try {
+          void removeReactionDiscord(params.channelId, params.messageId, previousEmoji, {
+            rest: params.rest as never,
+          }).catch((err) => {
+            handleError(err);
+          });
+        } catch (err) {
+          handleError(err);
+        }
       }
     });
 

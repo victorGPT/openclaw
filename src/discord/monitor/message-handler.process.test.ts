@@ -349,6 +349,51 @@ describe("processDiscordMessage ack reactions", () => {
     expect(removed).toContain("🤔");
   });
 
+  it("does not block terminal status transition when old reaction cleanup is slow", async () => {
+    vi.useFakeTimers();
+    let releaseSlowCleanup: (() => void) | null = null;
+    const slowCleanupGate = new Promise<void>((resolve) => {
+      releaseSlowCleanup = resolve;
+    });
+    removeReactionDiscord.mockImplementation(async (_channelId, _messageId, emoji: string) => {
+      if (emoji === "🤔") {
+        await slowCleanupGate;
+      }
+    });
+
+    let markTransitionApplied!: () => void;
+    const transitionApplied = new Promise<void>((resolve) => {
+      markTransitionApplied = resolve;
+    });
+    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
+      await params?.replyOptions?.onReasoningStream?.();
+      await vi.advanceTimersByTimeAsync(200);
+      await params?.replyOptions?.onToolStart?.({ name: "exec" });
+      await vi.advanceTimersByTimeAsync(200);
+      markTransitionApplied();
+      return { queuedFinal: true, counts: { final: 1, tool: 0, block: 0 } };
+    });
+
+    const ctx = await createBaseContext();
+
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const runPromise = processDiscordMessage(ctx as any);
+    try {
+      await transitionApplied;
+      await vi.advanceTimersByTimeAsync(1);
+
+      const reacted = (
+        reactMessageDiscord.mock.calls as unknown as Array<[unknown, unknown, string]>
+      ).map((call) => call[2]);
+      expect(reacted).toContain("💻");
+      expect(reacted).toContain("✅");
+    } finally {
+      releaseSlowCleanup?.();
+      removeReactionDiscord.mockImplementation(async () => {});
+      await runPromise;
+    }
+  });
+
   it("blocks active-to-waiting regression when queued signal arrives after tool start", async () => {
     vi.useFakeTimers();
     dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
