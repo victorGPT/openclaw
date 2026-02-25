@@ -59,7 +59,8 @@ const DISCORD_STATUS_STALL_SOFT_EMOJI = "⏳";
 const DISCORD_STATUS_STALL_HARD_EMOJI = "⚠️";
 const DISCORD_STATUS_DONE_HOLD_MS = 1500;
 const DISCORD_STATUS_ERROR_HOLD_MS = 2500;
-const DISCORD_STATUS_DEBOUNCE_MS = 150;
+const DISCORD_STATUS_DEBOUNCE_MS = 80;
+const DISCORD_STATUS_TOOL_DEBOUNCE_FLOOR_MS = 150;
 const DISCORD_STATUS_STALL_SOFT_MS = 10_000;
 const DISCORD_STATUS_STALL_HARD_MS = 30_000;
 const DISCORD_STATUS_DEFERRED_ERROR_RETRY_TTL_MS = 45_000;
@@ -316,10 +317,12 @@ function createDiscordStatusReactionController(params: {
     stallSoft: params.emojis?.stallSoft || DISCORD_STATUS_STALL_SOFT_EMOJI,
     stallHard: params.emojis?.stallHard || DISCORD_STATUS_STALL_HARD_EMOJI,
   };
-  const debounceMs =
-    typeof params.timing?.debounceMs === "number" && params.timing.debounceMs >= 0
-      ? params.timing.debounceMs
-      : DISCORD_STATUS_DEBOUNCE_MS;
+  const hasCustomDebounce =
+    typeof params.timing?.debounceMs === "number" && params.timing.debounceMs >= 0;
+  const debounceMs = hasCustomDebounce ? params.timing.debounceMs : DISCORD_STATUS_DEBOUNCE_MS;
+  const toolDebounceMs = hasCustomDebounce
+    ? debounceMs
+    : Math.max(debounceMs, DISCORD_STATUS_TOOL_DEBOUNCE_FLOOR_MS);
   const handleError = (err: unknown) => {
     params.onError?.(err);
     logAckFailure({
@@ -340,6 +343,10 @@ function createDiscordStatusReactionController(params: {
   let hardStallTimer: ReturnType<typeof setTimeout> | null = null;
 
   const transitionsAllowed = params.enabled && params.transitionMode === "full";
+  const isToolPhaseEmoji = (emoji: string) =>
+    emoji === DISCORD_STATUS_TOOL_EMOJI ||
+    emoji === DISCORD_STATUS_CODING_EMOJI ||
+    emoji === DISCORD_STATUS_WEB_EMOJI;
 
   const hasReachedActivePhase = () =>
     DISCORD_STATUS_PHASE_ORDER[semanticPhase] >= DISCORD_STATUS_PHASE_ORDER.active;
@@ -402,7 +409,7 @@ function createDiscordStatusReactionController(params: {
 
   const requestEmoji = (
     emoji: string,
-    options?: { immediate?: boolean; allowInitialRegression?: boolean },
+    options?: { immediate?: boolean; allowInitialRegression?: boolean; debounceMs?: number },
   ) => {
     if (!params.enabled || !emoji) {
       return Promise.resolve();
@@ -443,7 +450,7 @@ function createDiscordStatusReactionController(params: {
         return;
       }
       void applyEmoji(emojiToApply);
-    }, debounceMs);
+    }, options?.debounceMs ?? debounceMs);
     return Promise.resolve();
   };
 
@@ -477,7 +484,8 @@ function createDiscordStatusReactionController(params: {
       return Promise.resolve();
     }
     scheduleStallTimers();
-    return requestEmoji(emoji);
+    const phaseDebounceMs = isToolPhaseEmoji(emoji) ? toolDebounceMs : debounceMs;
+    return requestEmoji(emoji, { debounceMs: phaseDebounceMs });
   };
 
   const setWaiting = () => {
