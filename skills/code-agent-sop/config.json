@@ -1,0 +1,35 @@
+{
+  "$schema": "https://openclaw.ai/schemas/skill.json",
+  "name": "code-agent-sop",
+  "version": "1.0.0",
+  "description": "Code Agent 强制 SOP - Boris Tane 方法论 Discord 适配版",
+  "author": "victorwu.eth",
+  
+  "trigger": {
+    "agents": ["codex-dev", "codex-review"],
+    "channels": ["discord"],
+    "keywords": [
+      "研究", "实现", "修复", "重构", "优化",
+      "research", "implement", "fix", "refactor", "optimize"
+    ]
+  },
+  
+  "enforce": {
+    "requirePlanBeforeCode": true,
+    "requireReviewBeforeMerge": true,
+    "maxAnnotationCycles": 6,
+    "progressHeartbeatSeconds": 60
+  },
+  
+  "templates": {
+    "research": "## 研究结论\\n\\n当前现状：\\n• \\n\\n风险点：\\n⚠️ \\n\\n建议方案：\\nA. \\nB. \\n",
+    "plan": "## 实现计划\\n\\n变更范围：\\n• \\n\\n实现步骤：\\n1️⃣ \\n2️⃣ \\n3️⃣ \\n\\n检查点：\\n□ typecheck 通过\\n□ 单测覆盖\\n□ 接口兼容\\n",
+    "review": "## 代码评审\\n\\n检查项：\\n□ 代码风格\\n□ 类型安全\\n□ 测试覆盖\\n□ 接口兼容\\n\\n结论：PASS / MINOR / MAJOR / BLOCKING\\n"
+  },
+  
+  "metadata": {
+    "basedOn": "Boris Tane - How I Use Claude Code",
+    "source": "https://boristane.com/blog/how-i-use-claude-code",
+    "adaptedFor": "OpenClaw + Discord"
+  }
+}
