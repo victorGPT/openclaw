@@ -1,8 +1,20 @@
+---
+name: code-agent-sop
+description: "Use when handling Discord code implementation/review tasks routed to codex-dev or codex-review, and strict plan-first + inline review loop governance is required."
+metadata:
+  {
+    "openclaw":
+      {
+        "emoji": "🧭"
+      }
+  }
+---
+
 # Code Agent 强制 SOP
 
 > 基于 Boris Tane 方法论，适配 OpenClaw + Discord 环境
 > 适用 Agent：codex-dev, codex-review
-> 触发条件：所有代码相关任务（实现、修复、重构、优化）
+> 触发条件：Discord 代码相关任务（实现、修复、重构、优化）
 
 ---
 
@@ -14,6 +26,15 @@
 2. **未通过 review 不合并**
 3. **发现问题不自己 patch**（必须停止等批准）
 4. **中途 scope creep 必须回到 planning 阶段**
+
+---
+
+## 🔒 作用域与加载边界（防止 scope bleed）
+
+1. **本 Skill 的目标作用域**：Discord 场景下、由 `codex-dev` / `codex-review` 承担的代码任务。
+2. **当前加载现实**：OpenClaw 技能检索主要基于 `SKILL.md` frontmatter + 内容语义；`config.json` 目前不是硬门禁。
+3. **执行约束**：若会话不是上述作用域（例如非 Discord、非代码任务、非 codex-dev/codex-review 责任面），本 Skill 不应被采用。
+4. **治理建议**：`config.json` 作为补充说明保留；若需要强制门禁，应在后续实现 loader 对 `config.json` 的约束支持。
 
 ---
 

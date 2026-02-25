@@ -253,3 +253,4 @@
 | 缺少重启分类判定优先级规则 | P0 | 新增 Planned/Unexpected/Unknown 判定顺位、冲突处理、证据可信度优先级 | E | 已处理 |
 | 缺少阈值冷启动校准机制 | P1 | 新增 7 天试运行后自动建议机制、采纳条件、评审责任与节奏 | G、D（M4） | 已处理 |
 | 验证门槛缺少量化阈值 | P1 | 新增覆盖率、延迟、准确性、一致性、合规性量化验收表并标注阻塞级别 | H | 已处理 |
+| Skill 作用域可能外溢（config.json 非硬门禁） | P1 | 已在 `skills/code-agent-sop/SKILL.md` 增加 frontmatter 与作用域边界说明；并新增 v1.1 follow-up：评估并实现 loader 对 `skills/**/config.json` 的硬门禁支持 | E、J | 部分处理（跟踪中） |
