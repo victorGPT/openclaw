@@ -15,11 +15,6 @@ import { shouldAckReaction as shouldAckReactionGate } from "../../channels/ack-r
 import { logTypingFailure, logAckFailure } from "../../channels/logging.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { recordInboundSession } from "../../channels/session.js";
-import {
-  createStatusReactionController,
-  DEFAULT_TIMING,
-  type StatusReactionAdapter,
-} from "../../channels/status-reactions.js";
 import { createTypingCallbacks } from "../../channels/typing.js";
 import { isDangerousNameMatchingEnabled } from "../../config/dangerous-name-matching.js";
 import { resolveDiscordPreviewStreamMode } from "../../config/discord-preview-streaming.js";
@@ -48,14 +43,18 @@ import {
 } from "./message-utils.js";
 import { buildDirectLabel, buildGuildLabel, resolveReplyContext } from "./reply-context.js";
 import { deliverDiscordReply } from "./reply-delivery.js";
+import {
+  createDiscordStatusReactionLifecycle,
+  DISCORD_STATUS_CLEAR_HOLD_MS,
+  resolveDiscordStatusReactionProjection,
+  type DiscordStatusReactionAdapter,
+} from "./status-reaction-lifecycle.js";
+import {
+  claimDiscordStatusReactionQueue,
+  releaseDiscordStatusReactionQueue,
+} from "./status-reaction-queue.js";
 import { resolveDiscordAutoThreadReplyPlan, resolveDiscordThreadStarter } from "./threading.js";
 import { sendTyping } from "./typing.js";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
 
 export async function processDiscordMessage(ctx: DiscordMessagePreflightContext) {
   const {
@@ -136,7 +135,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       }),
     );
   const statusReactionsEnabled = shouldAckReaction();
-  const discordAdapter: StatusReactionAdapter = {
+  const discordAdapter: DiscordStatusReactionAdapter = {
     setReaction: async (emoji) => {
       await reactMessageDiscord(messageChannelId, message.id, emoji, {
         rest: client.rest as never,
@@ -148,12 +147,19 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       });
     },
   };
-  const statusReactions = createStatusReactionController({
+  const statusReactions = createDiscordStatusReactionLifecycle({
     enabled: statusReactionsEnabled,
+    messageId: message.id,
     adapter: discordAdapter,
-    initialEmoji: ackReaction,
-    emojis: cfg.messages?.statusReactions?.emojis,
-    timing: cfg.messages?.statusReactions?.timing,
+    projection: resolveDiscordStatusReactionProjection(
+      cfg.messages?.statusReactions?.emojis,
+      ackReaction,
+    ),
+    onTrace: (entry) => {
+      logVerbose(
+        `discord status-reaction: msg=${entry.messageId} state=${entry.state} stage=${entry.stage}`,
+      );
+    },
     onError: (err) => {
       logAckFailure({
         log: logVerbose,
@@ -163,9 +169,6 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       });
     },
   });
-  if (statusReactionsEnabled) {
-    void statusReactions.setQueued();
-  }
 
   const fromLabel = isDirectMessage
     ? buildDirectLabel(author)
@@ -668,9 +671,16 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     },
     onReplyStart: async () => {
       await typingCallbacks.onReplyStart();
-      await statusReactions.setThinking();
+      await statusReactions.enterActive();
     },
   });
+
+  let statusQueueClaimed = false;
+  if (statusReactionsEnabled) {
+    const claim = claimDiscordStatusReactionQueue(message.id);
+    statusQueueClaimed = true;
+    void statusReactions.enterWaiting(claim.hasPriorPendingWork);
+  }
 
   let dispatchResult: Awaited<ReturnType<typeof dispatchInboundMessage>> | null = null;
   let dispatchError = false;
@@ -712,10 +722,10 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           : undefined,
         onModelSelected,
         onReasoningStream: async () => {
-          await statusReactions.setThinking();
+          await statusReactions.enterActive();
         },
-        onToolStart: async (payload) => {
-          await statusReactions.setTool(payload.name);
+        onToolStart: async (_payload) => {
+          await statusReactions.enterActive();
         },
       },
     });
@@ -736,18 +746,13 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       markDispatchIdle();
     }
     if (statusReactionsEnabled) {
-      if (dispatchError) {
-        await statusReactions.setError();
-      } else {
-        await statusReactions.setDone();
+      if (statusQueueClaimed) {
+        releaseDiscordStatusReactionQueue(message.id);
       }
+      await statusReactions.enterActive();
+      await statusReactions.complete(!dispatchError);
       if (removeAckAfterReply) {
-        void (async () => {
-          await sleep(dispatchError ? DEFAULT_TIMING.errorHoldMs : DEFAULT_TIMING.doneHoldMs);
-          await statusReactions.clear();
-        })();
-      } else {
-        void statusReactions.restoreInitial();
+        statusReactions.clearAfterHold(DISCORD_STATUS_CLEAR_HOLD_MS);
       }
     }
   }
