@@ -406,6 +406,66 @@ describe("subscribeEmbeddedPiSession", () => {
     expect(payloads[0]?.mediaUrls).toEqual(["https://example.com/a.png"]);
   });
 
+  it("emits structured skill fact events when SKILL.md read succeeds", () => {
+    const { emit, onAgentEvent } = createAgentEventHarness({
+      runId: "run-skill-success",
+      sessionKey: "agent:main:main",
+    });
+
+    emit({
+      type: "tool_execution_start",
+      toolName: "read",
+      toolCallId: "skill-read-1",
+      args: { path: "/tmp/skills/read-working-memory/SKILL.md" },
+    });
+    emit({
+      type: "tool_execution_end",
+      toolName: "read",
+      toolCallId: "skill-read-1",
+      isError: false,
+      result: { content: [{ type: "text", text: "ok" }] },
+    });
+
+    const skillEvents = onAgentEvent.mock.calls
+      .map((call) => call[0] as { stream?: unknown; data?: Record<string, unknown> } | undefined)
+      .filter((evt) => evt?.stream === "skill");
+    expect(skillEvents).toHaveLength(1);
+    const data = skillEvents[0]?.data ?? {};
+    expect(typeof data.ts).toBe("number");
+    expect(data.skill_name).toBe("read-working-memory");
+    expect(data.session_key).toBe("agent:main:main");
+    expect(data.outcome).toBe("success");
+    expect(typeof data.dedupe_key).toBe("string");
+    expect((data.dedupe_key as string).length).toBeGreaterThan(0);
+  });
+
+  it("emits structured skill fact events when SKILL.md read fails", () => {
+    const { emit, onAgentEvent } = createAgentEventHarness({
+      runId: "run-skill-error",
+      sessionKey: "agent:main:main",
+    });
+
+    emit({
+      type: "tool_execution_start",
+      toolName: "read",
+      toolCallId: "skill-read-2",
+      args: { path: "/tmp/skills/read-working-memory/SKILL.md" },
+    });
+    emit({
+      type: "tool_execution_end",
+      toolName: "read",
+      toolCallId: "skill-read-2",
+      isError: true,
+      result: { error: "not found" },
+    });
+
+    const skillEvents = onAgentEvent.mock.calls
+      .map((call) => call[0] as { stream?: unknown; data?: Record<string, unknown> } | undefined)
+      .filter((evt) => evt?.stream === "skill");
+    expect(skillEvents).toHaveLength(1);
+    expect(skillEvents[0]?.data?.outcome).toBe("fail");
+  });
+
   it("keeps unresolved mutating failure when an unrelated tool succeeds", () => {
     const { emit, subscription } = createWriteFailureHarness({
       runId: "run-tools-1",

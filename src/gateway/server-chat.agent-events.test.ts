@@ -351,6 +351,42 @@ describe("agent event handler", () => {
     resetAgentRunContextForTest();
   });
 
+  it("routes skill fact events only to registered recipients", () => {
+    const { broadcast, broadcastToConnIds, nodeSendToSession, toolEventRecipients, handler } =
+      createHarness({
+        resolveSessionKeyForRun: () => "session-1",
+      });
+
+    registerAgentRunContext("run-skill", { sessionKey: "session-1", verboseLevel: "off" });
+    toolEventRecipients.add("run-skill", "conn-1");
+
+    handler({
+      runId: "run-skill",
+      seq: 1,
+      stream: "skill",
+      ts: Date.now(),
+      data: {
+        ts: Date.now(),
+        skill_name: "read-working-memory",
+        session_key: "session-1",
+        outcome: "success",
+        dedupe_key: "skill-dedupe-1",
+      },
+    });
+
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(broadcastToConnIds).toHaveBeenCalledTimes(1);
+    const payload = broadcastToConnIds.mock.calls[0]?.[1] as {
+      stream?: string;
+      data?: Record<string, unknown>;
+    };
+    expect(payload.stream).toBe("skill");
+    expect(payload.data?.skill_name).toBe("read-working-memory");
+    const nodeToolCalls = nodeSendToSession.mock.calls.filter(([, event]) => event === "agent");
+    expect(nodeToolCalls).toHaveLength(0);
+    resetAgentRunContextForTest();
+  });
+
   it("broadcasts fallback events to agent subscribers and node session", () => {
     const { broadcast, broadcastToConnIds, nodeSendToSession, handler } = createHarness({
       resolveSessionKeyForRun: () => "session-fallback",

@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
-import { emitAgentEvent } from "../infra/agent-events.js";
+import { emitAgentEvent, type SkillExecutionFactEventData } from "../infra/agent-events.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import type { PluginHookAfterToolCallEvent } from "../plugins/types.js";
 import { normalizeTextForComparison } from "./pi-embedded-helpers.js";
@@ -23,6 +24,114 @@ import { normalizeToolName } from "./tool-policy.js";
 
 /** Track tool execution start times and args for after_tool_call hook */
 const toolStartData = new Map<string, { startTime: number; args: unknown }>();
+
+function resolveStringArg(args: unknown, keys: string[]): string | undefined {
+  if (!args || typeof args !== "object") {
+    return undefined;
+  }
+  const record = args as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value !== "string") {
+      continue;
+    }
+    const normalized = value.trim();
+    if (!normalized) {
+      continue;
+    }
+    return normalized;
+  }
+  return undefined;
+}
+
+type SkillReadFact = {
+  skillPath: string;
+  skillName: string;
+  channel?: string;
+  thread?: string;
+};
+
+function resolveSkillReadFact(args: unknown): SkillReadFact | undefined {
+  const rawPath = resolveStringArg(args, ["path", "file_path"]);
+  if (!rawPath) {
+    return undefined;
+  }
+  const normalizedPath = rawPath.replaceAll("\\", "/");
+  const segments = normalizedPath
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (segments.length < 2) {
+    return undefined;
+  }
+  const fileName = segments.at(-1)?.toLowerCase();
+  if (fileName !== "skill.md") {
+    return undefined;
+  }
+  const skillName = segments.at(-2);
+  if (!skillName) {
+    return undefined;
+  }
+  return {
+    skillPath: normalizedPath,
+    skillName,
+    channel: resolveStringArg(args, ["channel"]),
+    thread: resolveStringArg(args, ["thread", "thread_id", "threadId"]),
+  };
+}
+
+function buildSkillExecutionDedupeKey(params: {
+  runId: string;
+  toolCallId: string;
+  skillPath: string;
+  outcome: "success" | "fail" | "skip";
+}) {
+  return createHash("sha256")
+    .update([params.runId, params.toolCallId, params.skillPath, params.outcome].join("|"))
+    .digest("hex");
+}
+
+function emitSkillExecutionFactEvent(params: {
+  ctx: ToolHandlerContext;
+  toolName: string;
+  toolCallId: string;
+  startArgs: unknown;
+  isToolError: boolean;
+}) {
+  if (params.toolName !== "read") {
+    return;
+  }
+  const fact = resolveSkillReadFact(params.startArgs);
+  if (!fact) {
+    return;
+  }
+  const sessionKey = params.ctx.params.sessionKey?.trim();
+  const outcome = params.isToolError ? "fail" : "success";
+  const ts = Date.now();
+  const data: SkillExecutionFactEventData = {
+    ts,
+    skill_name: fact.skillName,
+    outcome,
+    dedupe_key: buildSkillExecutionDedupeKey({
+      runId: params.ctx.params.runId,
+      toolCallId: params.toolCallId,
+      skillPath: fact.skillPath,
+      outcome,
+    }),
+    ...(sessionKey ? { session_key: sessionKey } : {}),
+    ...(fact.thread ? { thread: fact.thread } : {}),
+    ...(fact.channel ? { channel: fact.channel } : {}),
+  };
+  emitAgentEvent({
+    runId: params.ctx.params.runId,
+    stream: "skill",
+    data,
+  });
+  void params.ctx.params.onAgentEvent?.({
+    stream: "skill",
+    data,
+  });
+}
 
 function isCronAddAction(args: unknown): boolean {
   if (!args || typeof args !== "object") {
@@ -381,6 +490,14 @@ export async function handleToolExecutionEnd(
   if (!isToolError && toolName === "cron" && isCronAddAction(startData?.args)) {
     ctx.state.successfulCronAdds += 1;
   }
+
+  emitSkillExecutionFactEvent({
+    ctx,
+    toolName,
+    toolCallId,
+    startArgs: startData?.args,
+    isToolError,
+  });
 
   emitAgentEvent({
     runId: ctx.params.runId,

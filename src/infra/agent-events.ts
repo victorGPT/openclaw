@@ -1,6 +1,24 @@
 import type { VerboseLevel } from "../auto-reply/thinking.js";
 
-export type AgentEventStream = "lifecycle" | "tool" | "assistant" | "error" | (string & {});
+export type SkillEventOutcome = "success" | "fail" | "skip";
+
+export type SkillExecutionFactEventData = {
+  ts: number;
+  skill_name: string;
+  session_key?: string;
+  thread?: string;
+  channel?: string;
+  outcome: SkillEventOutcome;
+  dedupe_key: string;
+};
+
+export type AgentEventStream =
+  | "lifecycle"
+  | "tool"
+  | "assistant"
+  | "error"
+  | "skill"
+  | (string & {});
 
 export type AgentEventPayload = {
   runId: string;
