@@ -179,17 +179,6 @@ function classifyToolSignal(toolName?: string): DiscordStatusSpecialization {
   return "tool";
 }
 
-function specializationPriority(kind: DiscordStatusSpecialization): number {
-  switch (kind) {
-    case "coded":
-      return 3;
-    case "search":
-      return 2;
-    case "tool":
-      return 1;
-  }
-}
-
 function resolveStateForSpecialization(
   kind: DiscordStatusSpecialization,
 ): Extract<DiscordStatusLifecycleState, "active-coded" | "active-search" | "active-tool"> {
@@ -237,8 +226,6 @@ export function createDiscordStatusReactionLifecycle(params: {
   let clearTimer: NodeJS.Timeout | null = null;
   let activeEnteredAt: number | null = null;
   let specializationChosen = false;
-  let pendingSpecialization: DiscordStatusSpecialization | null = null;
-  let specializationTimer: NodeJS.Timeout | null = null;
   const knownEmojis = new Set<string>([
     projection.waitingFresh,
     projection.waitingBacklog,
@@ -248,33 +235,14 @@ export function createDiscordStatusReactionLifecycle(params: {
     projection.activeTool,
   ]);
 
-  function clearSpecializationTimer(): void {
-    if (specializationTimer) {
-      clearTimeout(specializationTimer);
-      specializationTimer = null;
-    }
-  }
-
   function resetActiveWindow(): void {
     activeEnteredAt = Date.now();
     specializationChosen = false;
-    pendingSpecialization = null;
-    clearSpecializationTimer();
-    specializationTimer = setTimeout(() => {
-      specializationTimer = null;
-      if (!pendingSpecialization || specializationChosen || state !== "active-base") {
-        return;
-      }
-      specializationChosen = true;
-      void transition(resolveStateForSpecialization(pendingSpecialization));
-    }, DISCORD_STATUS_SPECIALIZATION_WINDOW_MS);
   }
 
   function closeActiveWindow(): void {
     activeEnteredAt = null;
-    pendingSpecialization = null;
     specializationChosen = false;
-    clearSpecializationTimer();
   }
 
   function transition(nextState: DiscordStatusLifecycleState): Promise<void> {
@@ -471,17 +439,8 @@ export function createDiscordStatusReactionLifecycle(params: {
     }
 
     const nextSpecialization = classifyToolSignal(toolName);
-    if (
-      !pendingSpecialization ||
-      specializationPriority(nextSpecialization) > specializationPriority(pendingSpecialization)
-    ) {
-      pendingSpecialization = nextSpecialization;
-    }
-    if (pendingSpecialization === "coded") {
-      specializationChosen = true;
-      clearSpecializationTimer();
-      void transition("active-coded");
-    }
+    specializationChosen = true;
+    void transition(resolveStateForSpecialization(nextSpecialization));
   }
 
   return {

@@ -73,8 +73,7 @@ describe("status-reaction-lifecycle", () => {
     expect(setReaction.mock.calls.map((call) => call[0])).toEqual(["👀", "🤔"]);
   });
 
-  it("picks the highest-priority specialization without flapping", async () => {
-    vi.useFakeTimers();
+  it("specializes to search immediately when observed within the active window", async () => {
     const setReaction = vi.fn(async (_emoji: string) => {});
     const lifecycle = createDiscordStatusReactionLifecycle({
       enabled: true,
@@ -85,15 +84,27 @@ describe("status-reaction-lifecycle", () => {
 
     await lifecycle.enterWaiting(false);
     await lifecycle.enterActive();
-    lifecycle.noteToolActivity("custom_tool");
     lifecycle.noteToolActivity("browser");
-    lifecycle.noteToolActivity("read");
-    await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(300);
-    lifecycle.noteToolActivity("web_search");
     await lifecycle.complete(true);
 
-    expect(setReaction.mock.calls.map((call) => call[0])).toEqual(["👀", "🤔", "💻"]);
+    expect(setReaction.mock.calls.map((call) => call[0])).toEqual(["👀", "🤔", "🔍"]);
+  });
+
+  it("specializes to generic tool immediately when observed within the active window", async () => {
+    const setReaction = vi.fn(async (_emoji: string) => {});
+    const lifecycle = createDiscordStatusReactionLifecycle({
+      enabled: true,
+      messageId: "m4-tool",
+      adapter: { setReaction },
+      projection: resolveDiscordStatusReactionProjection(undefined, "👀"),
+    });
+
+    await lifecycle.enterWaiting(false);
+    await lifecycle.enterActive();
+    lifecycle.noteToolActivity("custom_tool");
+    await lifecycle.complete(true);
+
+    expect(setReaction.mock.calls.map((call) => call[0])).toEqual(["👀", "🤔", "🔧"]);
   });
 
   it("records failed transition when active update fails", async () => {

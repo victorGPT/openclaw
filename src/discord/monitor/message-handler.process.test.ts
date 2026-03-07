@@ -305,6 +305,23 @@ describe("processDiscordMessage ack reactions", () => {
     expect(sendMocks.removeReactionDiscord).toHaveBeenCalled();
   });
 
+  it("specializes to search immediately for short search runs", async () => {
+    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
+      await params?.replyOptions?.onToolStart?.({ name: "browser" });
+      return { queuedFinal: false, counts: { final: 0, tool: 0, block: 0 } };
+    });
+
+    const ctx = await createBaseContext();
+
+    // oxlint-disable-next-line typescript/no-explicit-any
+    await processDiscordMessage(ctx as any);
+
+    const emojis = getReactionEmojis();
+    expect(emojis).toContain("👀");
+    expect(emojis).toContain(DISCORD_STATUS_DEFAULT_PROJECTION.activeBase);
+    expect(emojis).toContain(DISCORD_STATUS_DEFAULT_PROJECTION.activeSearch);
+  });
+
   it("keeps backlog waiting until prior message releases the lane", async () => {
     let releaseFirst!: () => void;
     const firstGate = new Promise<void>((resolve) => {
