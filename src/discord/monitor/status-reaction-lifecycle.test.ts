@@ -121,12 +121,31 @@ describe("status-reaction-lifecycle", () => {
     expect(failed).toContain("active-base");
   });
 
-  it("clears reactions directly on completion without terminal emoji", async () => {
+  it("clears backlog waiting directly when the run ends before becoming active", async () => {
     const setReaction = vi.fn(async (_emoji: string) => {});
     const removeReaction = vi.fn(async (_emoji: string) => {});
     const lifecycle = createDiscordStatusReactionLifecycle({
       enabled: true,
       messageId: "m6",
+      adapter: { setReaction, removeReaction },
+      projection: resolveDiscordStatusReactionProjection(undefined, "👀"),
+    });
+
+    await lifecycle.enterWaiting(true);
+    await lifecycle.complete(false);
+
+    expect(setReaction.mock.calls.map((call) => call[0])).toEqual(["⏳"]);
+    expect(removeReaction.mock.calls.map((call) => call[0])).toEqual(
+      expect.arrayContaining(["👀", "⏳", "🤔", "💻", "🔍", "🔧"]),
+    );
+  });
+
+  it("clears reactions directly on completion without terminal emoji", async () => {
+    const setReaction = vi.fn(async (_emoji: string) => {});
+    const removeReaction = vi.fn(async (_emoji: string) => {});
+    const lifecycle = createDiscordStatusReactionLifecycle({
+      enabled: true,
+      messageId: "m7",
       adapter: { setReaction, removeReaction },
       projection: resolveDiscordStatusReactionProjection(undefined, "👀"),
     });

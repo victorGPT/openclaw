@@ -105,7 +105,7 @@ function canTransition(
     return isWaitingState(to) || to === "active-base";
   }
   if (isWaitingState(from)) {
-    return to === "active-base";
+    return to === "active-base" || to === "cleared";
   }
   if (from === "active-base") {
     return (
