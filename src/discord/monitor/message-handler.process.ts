@@ -15,11 +15,6 @@ import { shouldAckReaction as shouldAckReactionGate } from "../../channels/ack-r
 import { logTypingFailure, logAckFailure } from "../../channels/logging.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { recordInboundSession } from "../../channels/session.js";
-import {
-  createStatusReactionController,
-  DEFAULT_TIMING,
-  type StatusReactionAdapter,
-} from "../../channels/status-reactions.js";
 import { createTypingCallbacks } from "../../channels/typing.js";
 import { isDangerousNameMatchingEnabled } from "../../config/dangerous-name-matching.js";
 import { resolveDiscordPreviewStreamMode } from "../../config/discord-preview-streaming.js";
@@ -50,14 +45,18 @@ import {
 } from "./message-utils.js";
 import { buildDirectLabel, buildGuildLabel, resolveReplyContext } from "./reply-context.js";
 import { deliverDiscordReply } from "./reply-delivery.js";
+import {
+  createDiscordStatusReactionLifecycle,
+  resolveDiscordStatusReactionProjection,
+  type DiscordStatusReactionAdapter,
+} from "./status-reaction-lifecycle.js";
+import {
+  claimDiscordStatusReactionQueue,
+  releaseDiscordStatusReactionQueue,
+  waitForDiscordStatusReactionQueueTurn,
+} from "./status-reaction-queue.js";
 import { resolveDiscordAutoThreadReplyPlan, resolveDiscordThreadStarter } from "./threading.js";
 import { sendTyping } from "./typing.js";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
 
 const DISCORD_TYPING_MAX_DURATION_MS = 20 * 60_000;
 
@@ -145,7 +144,6 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     channel: "discord",
     accountId,
   });
-  const removeAckAfterReply = cfg.messages?.removeAckAfterReply ?? false;
   const mediaLocalRoots = getAgentScopedMediaLocalRoots(cfg, route.agentId);
   const shouldAckReaction = () =>
     Boolean(
@@ -162,9 +160,11 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       }),
     );
   const statusReactionsEnabled = shouldAckReaction();
+  let statusQueueClaimed = false;
+  let queueTurnPromise: Promise<void> | null = null;
   // Discord outbound helpers expect Carbon's request client shape explicitly.
   const discordRest = client.rest as unknown as RequestClient;
-  const discordAdapter: StatusReactionAdapter = {
+  const discordAdapter: DiscordStatusReactionAdapter = {
     setReaction: async (emoji) => {
       await reactMessageDiscord(messageChannelId, message.id, emoji, {
         rest: discordRest,
@@ -176,12 +176,14 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       });
     },
   };
-  const statusReactions = createStatusReactionController({
+  const statusReactions = createDiscordStatusReactionLifecycle({
     enabled: statusReactionsEnabled,
+    messageId: message.id,
     adapter: discordAdapter,
-    initialEmoji: ackReaction,
-    emojis: cfg.messages?.statusReactions?.emojis,
-    timing: cfg.messages?.statusReactions?.timing,
+    projection: resolveDiscordStatusReactionProjection(
+      cfg.messages?.statusReactions?.emojis,
+      ackReaction,
+    ),
     onError: (err) => {
       logAckFailure({
         log: logVerbose,
@@ -192,8 +194,21 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     },
   });
   if (statusReactionsEnabled) {
-    void statusReactions.setQueued();
+    const claim = claimDiscordStatusReactionQueue(messageChannelId, message.id);
+    statusQueueClaimed = true;
+    void statusReactions.enterWaiting(claim.hasPriorPendingWork);
+    if (claim.hasPriorPendingWork) {
+      queueTurnPromise = waitForDiscordStatusReactionQueueTurn(messageChannelId, message.id);
+    }
   }
+  let statusLifecycleSettled = false;
+  const finalizeStatusReactions = async (succeeded: boolean): Promise<void> => {
+    if (!statusReactionsEnabled || statusLifecycleSettled) {
+      return;
+    }
+    statusLifecycleSettled = true;
+    await statusReactions.complete(succeeded);
+  };
 
   const fromLabel = isDirectMessage
     ? buildDirectLabel(author)
@@ -710,7 +725,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           return;
         }
         await typingCallbacks.onReplyStart();
-        await statusReactions.setThinking();
+        await statusReactions.enterActive();
       },
     });
 
@@ -718,10 +733,12 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   let dispatchError = false;
   let dispatchAborted = false;
   try {
+    await queueTurnPromise;
     if (isProcessAborted(abortSignal)) {
       dispatchAborted = true;
       return;
     }
+    await statusReactions.enterActive();
     dispatchResult = await dispatchInboundMessage({
       ctx: ctxPayload,
       cfg,
@@ -760,13 +777,17 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           : undefined,
         onModelSelected,
         onReasoningStream: async () => {
-          await statusReactions.setThinking();
+          if (isProcessAborted(abortSignal)) {
+            return;
+          }
+          await statusReactions.enterActive();
         },
         onToolStart: async (payload) => {
           if (isProcessAborted(abortSignal)) {
             return;
           }
-          await statusReactions.setTool(payload.name);
+          await statusReactions.enterActive();
+          statusReactions.noteToolActivity(payload.name);
         },
       },
     });
@@ -795,28 +816,11 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       markRunComplete();
       markDispatchIdle();
     }
-    if (statusReactionsEnabled) {
-      if (dispatchAborted) {
-        if (removeAckAfterReply) {
-          void statusReactions.clear();
-        } else {
-          void statusReactions.restoreInitial();
-        }
-      } else {
-        if (dispatchError) {
-          await statusReactions.setError();
-        } else {
-          await statusReactions.setDone();
-        }
-        if (removeAckAfterReply) {
-          void (async () => {
-            await sleep(dispatchError ? DEFAULT_TIMING.errorHoldMs : DEFAULT_TIMING.doneHoldMs);
-            await statusReactions.clear();
-          })();
-        } else {
-          void statusReactions.restoreInitial();
-        }
-      }
+    if (statusQueueClaimed && !statusLifecycleSettled) {
+      await finalizeStatusReactions(!dispatchError && !dispatchAborted);
+    }
+    if (statusQueueClaimed) {
+      releaseDiscordStatusReactionQueue(messageChannelId, message.id);
     }
   }
   if (dispatchAborted) {
