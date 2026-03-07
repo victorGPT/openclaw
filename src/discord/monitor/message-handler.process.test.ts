@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_EMOJIS } from "../../channels/status-reactions.js";
 import {
   createBaseDiscordMessageContext,
   createDiscordDirectMessageContextOverrides,
 } from "./message-handler.test-harness.js";
+import { DISCORD_STATUS_DEFAULT_PROJECTION } from "./status-reaction-lifecycle.js";
+import { __testing as queueTesting } from "./status-reaction-queue.js";
 import {
   __testing as threadBindingTesting,
   createThreadBindingManager,
@@ -152,7 +153,7 @@ beforeEach(() => {
   editMessageDiscord.mockClear();
   deliverDiscordReply.mockClear();
   createDiscordDraftStream.mockClear();
-  dispatchInboundMessage.mockClear();
+  dispatchInboundMessage.mockReset();
   recordInboundSession.mockClear();
   readSessionUpdatedAt.mockClear();
   resolveStorePath.mockClear();
@@ -160,6 +161,7 @@ beforeEach(() => {
   recordInboundSession.mockResolvedValue(undefined);
   readSessionUpdatedAt.mockReturnValue(undefined);
   resolveStorePath.mockReturnValue("/tmp/openclaw-discord-process-test-sessions.json");
+  queueTesting.resetQueueForTests();
   threadBindingTesting.resetThreadBindingsForTests();
 });
 
@@ -272,57 +274,119 @@ describe("processDiscordMessage ack reactions", () => {
     ]);
   });
 
-  it("debounces intermediate phase reactions and jumps to done for short runs", async () => {
-    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
-      await params?.replyOptions?.onReasoningStream?.();
-      await params?.replyOptions?.onToolStart?.({ name: "exec" });
-      return createNoQueuedDispatchResult();
-    });
-
-    const ctx = await createBaseContext();
-
-    // oxlint-disable-next-line typescript/no-explicit-any
-    await processDiscordMessage(ctx as any);
-
-    const emojis = getReactionEmojis();
-    expect(emojis).toContain("👀");
-    expect(emojis).toContain(DEFAULT_EMOJIS.done);
-    expect(emojis).not.toContain(DEFAULT_EMOJIS.thinking);
-    expect(emojis).not.toContain(DEFAULT_EMOJIS.coding);
-  });
-
-  it("shows stall emojis for long no-progress runs", async () => {
+  it("specializes once for coding runs and clears directly on completion", async () => {
     vi.useFakeTimers();
     let releaseDispatch!: () => void;
     const dispatchGate = new Promise<void>((resolve) => {
-      releaseDispatch = () => resolve();
+      releaseDispatch = resolve;
     });
-    dispatchInboundMessage.mockImplementationOnce(async () => {
+    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
+      await params?.replyOptions?.onReasoningStream?.();
+      await params?.replyOptions?.onToolStart?.({ name: "exec" });
       await dispatchGate;
-      return createNoQueuedDispatchResult();
+      return { queuedFinal: false, counts: { final: 0, tool: 0, block: 0 } };
     });
 
     const ctx = await createBaseContext();
+
     // oxlint-disable-next-line typescript/no-explicit-any
-    const runPromise = processDiscordMessage(ctx as any);
-
-    await vi.advanceTimersByTimeAsync(30_001);
+    const run = processDiscordMessage(ctx as any);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(300);
     releaseDispatch();
-    await vi.runAllTimersAsync();
+    await run;
 
-    await runPromise;
-    const emojis = (
-      sendMocks.reactMessageDiscord.mock.calls as unknown as Array<[unknown, unknown, string]>
-    ).map((call) => call[2]);
-    expect(emojis).toContain(DEFAULT_EMOJIS.stallSoft);
-    expect(emojis).toContain(DEFAULT_EMOJIS.stallHard);
-    expect(emojis).toContain(DEFAULT_EMOJIS.done);
+    const emojis = getReactionEmojis();
+    expect(emojis).toContain("👀");
+    expect(emojis).toContain(DISCORD_STATUS_DEFAULT_PROJECTION.activeBase);
+    expect(emojis).toContain(DISCORD_STATUS_DEFAULT_PROJECTION.activeCoded);
+    expect(emojis).not.toContain("✅");
+    expect(emojis).not.toContain("❌");
+    expect(sendMocks.removeReactionDiscord).toHaveBeenCalled();
+  });
+
+  it("keeps backlog waiting until prior message releases the lane", async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    dispatchInboundMessage.mockImplementationOnce(async () => {
+      await firstGate;
+      return { queuedFinal: false, counts: { final: 0, tool: 0, block: 0 } };
+    });
+    dispatchInboundMessage.mockImplementationOnce(async () => {
+      return { queuedFinal: false, counts: { final: 0, tool: 0, block: 0 } };
+    });
+
+    const first = await createBaseContext({
+      message: {
+        id: "m1",
+        channelId: "c1",
+        timestamp: new Date().toISOString(),
+        attachments: [],
+      },
+      messageChannelId: "c1",
+    });
+    const second = await createBaseContext({
+      message: {
+        id: "m2",
+        channelId: "c1",
+        timestamp: new Date().toISOString(),
+        attachments: [],
+      },
+      messageChannelId: "c1",
+    });
+
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const firstRun = processDiscordMessage(first as any);
+    await Promise.resolve();
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const secondRun = processDiscordMessage(second as any);
+
+    const getSecondMessageEmojis = () =>
+      (sendMocks.reactMessageDiscord.mock.calls as unknown as Array<[string, string, string]>)
+        .filter(([, messageId]) => messageId === "m2")
+        .map(([, , emoji]) => emoji);
+
+    await vi.waitFor(() => {
+      expect(getSecondMessageEmojis()).toContain("⏳");
+    });
+
+    const beforeRelease = getSecondMessageEmojis();
+    expect(beforeRelease).toContain("⏳");
+    expect(beforeRelease).not.toContain("✅");
+    expect(beforeRelease).not.toContain("❌");
+
+    releaseFirst();
+    await Promise.all([firstRun, secondRun]);
+    expect(dispatchInboundMessage).toHaveBeenCalledTimes(2);
+
+    const byMessage = new Map<string, string[]>();
+    for (const call of sendMocks.reactMessageDiscord.mock.calls as unknown as Array<
+      [string, string, string]
+    >) {
+      const [, messageId, emoji] = call;
+      byMessage.set(messageId, [...(byMessage.get(messageId) ?? []), emoji]);
+    }
+
+    expect(byMessage.get("m1") ?? []).toContain("👀");
+    expect(byMessage.get("m1") ?? []).not.toContain("⏳");
+    expect(byMessage.get("m2") ?? []).toContain("⏳");
+    expect(byMessage.get("m2") ?? []).not.toContain("👀");
+    expect(byMessage.get("m2") ?? []).not.toContain("✅");
+    expect(byMessage.get("m2") ?? []).not.toContain("❌");
   });
 
   it("applies status reaction emoji/timing overrides from config", async () => {
+    let releaseDispatch!: () => void;
+    const dispatchGate = new Promise<void>((resolve) => {
+      releaseDispatch = resolve;
+    });
     dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
       await params?.replyOptions?.onReasoningStream?.();
-      return createNoQueuedDispatchResult();
+      await params?.replyOptions?.onToolStart?.({ name: "read" });
+      await dispatchGate;
+      return { queuedFinal: false, counts: { final: 0, tool: 0, block: 0 } };
     });
 
     const ctx = await createBaseContext({
@@ -330,7 +394,7 @@ describe("processDiscordMessage ack reactions", () => {
         messages: {
           ackReaction: "👀",
           statusReactions: {
-            emojis: { queued: "🟦", thinking: "🧪", done: "🏁" },
+            emojis: { queued: "🟦", thinking: "🧪", coding: "🖥️" },
             timing: { debounceMs: 0 },
           },
         },
@@ -339,11 +403,20 @@ describe("processDiscordMessage ack reactions", () => {
     });
 
     // oxlint-disable-next-line typescript/no-explicit-any
-    await processDiscordMessage(ctx as any);
+    const run = processDiscordMessage(ctx as any);
+    await vi.waitFor(() => {
+      expect(getReactionEmojis()).toContain("🧪");
+    });
+    await vi.waitFor(() => {
+      expect(getReactionEmojis()).toContain("🖥️");
+    });
+    releaseDispatch();
+    await run;
 
     const emojis = getReactionEmojis();
     expect(emojis).toContain("🟦");
-    expect(emojis).toContain("🏁");
+    expect(emojis).toContain("🧪");
+    expect(emojis).toContain("🖥️");
   });
 
   it("clears status reactions when dispatch aborts and removeAckAfterReply is enabled", async () => {
