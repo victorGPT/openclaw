@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { PluginLogger } from "openclaw/plugin-sdk/acpx";
-import { ACPX_PINNED_VERSION, ACPX_PLUGIN_ROOT, buildAcpxLocalInstallCommand } from "./config.js";
+import {
+  ACPX_PINNED_INSTALL_TARGET,
+  ACPX_PLUGIN_ROOT,
+  buildAcpxLocalInstallCommand,
+} from "./config.js";
 import {
   resolveSpawnFailure,
   type SpawnCommandOptions,
@@ -105,7 +109,9 @@ export async function checkAcpxVersion(params: {
   spawnOptions?: SpawnCommandOptions;
 }): Promise<AcpxVersionCheckResult> {
   const expectedVersion = params.expectedVersion?.trim() || undefined;
-  const installCommand = buildAcpxLocalInstallCommand(expectedVersion ?? ACPX_PINNED_VERSION);
+  const installCommand = buildAcpxLocalInstallCommand(
+    expectedVersion ?? ACPX_PINNED_INSTALL_TARGET,
+  );
   const cwd = params.cwd ?? ACPX_PLUGIN_ROOT;
   const hasExpectedVersion = isExpectedVersionConfigured(expectedVersion);
   const probeArgs = hasExpectedVersion ? ["--version"] : ["--help"];
@@ -207,7 +213,7 @@ export async function ensureAcpx(params: {
   pendingEnsure = (async () => {
     const pluginRoot = params.pluginRoot ?? ACPX_PLUGIN_ROOT;
     const expectedVersion = params.expectedVersion?.trim() || undefined;
-    const installVersion = expectedVersion ?? ACPX_PINNED_VERSION;
+    const installTarget = expectedVersion ?? ACPX_PINNED_INSTALL_TARGET;
     const allowInstall = params.allowInstall ?? true;
 
     const precheck = await checkAcpxVersion({
@@ -229,7 +235,7 @@ export async function ensureAcpx(params: {
 
     const install = await spawnAndCollect({
       command: "npm",
-      args: ["install", "--omit=dev", "--no-save", `acpx@${installVersion}`],
+      args: ["install", "--omit=dev", "--no-save", `acpx@${installTarget}`],
       cwd: pluginRoot,
     });
 

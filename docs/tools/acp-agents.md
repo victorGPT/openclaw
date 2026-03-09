@@ -502,11 +502,12 @@ Then verify backend health:
 By default, the acpx plugin (published as `@openclaw/acpx`) uses the plugin-local pinned binary:
 
 1. Command defaults to `extensions/acpx/node_modules/.bin/acpx`.
-2. Expected version defaults to the extension pin.
+2. Plugin-local install defaults to the extension's pinned install target (which may be an npm version or a GitHub commit spec).
 3. Startup registers ACP backend immediately as not-ready.
-4. A background ensure job verifies `acpx --version`.
-5. If the plugin-local binary is missing or mismatched, it runs:
-   `npm install --omit=dev --no-save acpx@<pinned>` and re-verifies.
+4. A background ensure job verifies the local `acpx` command is available.
+5. If the plugin-local binary is missing, it runs:
+   `npm install --omit=dev --no-save acpx@<pinnedInstallTarget>` and re-verifies.
+6. Strict `expectedVersion` checking is only applied when you explicitly set `expectedVersion` in config.
 
 You can override command/version in plugin config:
 
@@ -531,6 +532,8 @@ Notes:
 - `command` accepts an absolute path, relative path, or command name (`acpx`).
 - Relative paths resolve from OpenClaw workspace directory.
 - `expectedVersion: "any"` disables strict version matching.
+- Leave `expectedVersion` unset when you want the bundled plugin-local install target to be authoritative.
+- Set `expectedVersion` only when you need strict semver matching against a custom binary/path.
 - When `command` points to a custom binary/path, plugin-local auto-install is disabled.
 - OpenClaw startup remains non-blocking while the backend health check runs.
 

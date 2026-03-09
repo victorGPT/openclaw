@@ -2,11 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  ACPX_LOCAL_INSTALL_COMMAND,
-  ACPX_PINNED_VERSION,
-  buildAcpxLocalInstallCommand,
-} from "./config.js";
+import { ACPX_PINNED_VERSION, buildAcpxLocalInstallCommand } from "./config.js";
 
 const { resolveSpawnFailureMock, spawnAndCollectMock } = vi.hoisted(() => ({
   resolveSpawnFailureMock: vi.fn<
@@ -99,7 +95,7 @@ describe("acpx ensure", () => {
       reason: "version-mismatch",
       expectedVersion: ACPX_PINNED_VERSION,
       installedVersion: "0.0.9",
-      installCommand: ACPX_LOCAL_INSTALL_COMMAND,
+      installCommand: buildAcpxLocalInstallCommand(ACPX_PINNED_VERSION),
     });
   });
 

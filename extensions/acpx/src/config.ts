@@ -8,13 +8,16 @@ export type AcpxPermissionMode = (typeof ACPX_PERMISSION_MODES)[number];
 export const ACPX_NON_INTERACTIVE_POLICIES = ["deny", "fail"] as const;
 export type AcpxNonInteractivePermissionPolicy = (typeof ACPX_NON_INTERACTIVE_POLICIES)[number];
 
-export const ACPX_PINNED_VERSION = "0.1.15";
+// Keep these pinned values in sync with extensions/acpx/package.json.
+export const ACPX_PINNED_VERSION = "0.1.3";
+export const ACPX_PINNED_INSTALL_TARGET =
+  "github:openclaw/acpx#a352fe13aabca03dc8442bf5dc13104ea2c77424";
 export const ACPX_VERSION_ANY = "any";
 const ACPX_BIN_NAME = process.platform === "win32" ? "acpx.cmd" : "acpx";
 export const ACPX_PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const ACPX_BUNDLED_BIN = path.join(ACPX_PLUGIN_ROOT, "node_modules", ".bin", ACPX_BIN_NAME);
-export function buildAcpxLocalInstallCommand(version: string = ACPX_PINNED_VERSION): string {
-  return `npm install --omit=dev --no-save acpx@${version}`;
+export function buildAcpxLocalInstallCommand(target: string = ACPX_PINNED_INSTALL_TARGET): string {
+  return `npm install --omit=dev --no-save acpx@${target}`;
 }
 export const ACPX_LOCAL_INSTALL_COMMAND = buildAcpxLocalInstallCommand();
 
@@ -334,10 +337,12 @@ export function resolveAcpxPluginConfig(params: {
   const allowPluginLocalInstall = command === ACPX_BUNDLED_BIN;
   const configuredExpectedVersion = normalized.expectedVersion;
   const expectedVersion =
-    configuredExpectedVersion === ACPX_VERSION_ANY
-      ? undefined
-      : (configuredExpectedVersion ?? (allowPluginLocalInstall ? ACPX_PINNED_VERSION : undefined));
-  const installCommand = buildAcpxLocalInstallCommand(expectedVersion ?? ACPX_PINNED_VERSION);
+    configuredExpectedVersion === ACPX_VERSION_ANY ? undefined : configuredExpectedVersion;
+  const installCommand = buildAcpxLocalInstallCommand(
+    configuredExpectedVersion && configuredExpectedVersion !== ACPX_VERSION_ANY
+      ? configuredExpectedVersion
+      : ACPX_PINNED_INSTALL_TARGET,
+  );
 
   return {
     command,

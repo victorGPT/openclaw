@@ -2,14 +2,13 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   ACPX_BUNDLED_BIN,
-  ACPX_PINNED_VERSION,
   createAcpxPluginConfigSchema,
   resolveAcpxPluginConfig,
   toAcpMcpServers,
 } from "./config.js";
 
 describe("acpx plugin config parsing", () => {
-  it("resolves bundled acpx with pinned version by default", () => {
+  it("resolves bundled acpx with plugin-local install enabled by default", () => {
     const resolved = resolveAcpxPluginConfig({
       rawConfig: {
         cwd: "/tmp/workspace",
@@ -18,7 +17,7 @@ describe("acpx plugin config parsing", () => {
     });
 
     expect(resolved.command).toBe(ACPX_BUNDLED_BIN);
-    expect(resolved.expectedVersion).toBe(ACPX_PINNED_VERSION);
+    expect(resolved.expectedVersion).toBeUndefined();
     expect(resolved.allowPluginLocalInstall).toBe(true);
     expect(resolved.cwd).toBe(path.resolve("/tmp/workspace"));
     expect(resolved.strictWindowsCmdWrapper).toBe(true);
