@@ -1,10 +1,13 @@
+import { type RequestClient } from "@buape/carbon";
 import { createRunStateMachine } from "../../channels/run-state-machine.js";
 import { danger } from "../../globals.js";
 import { formatDurationSeconds } from "../../infra/format-time/format-duration.ts";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
+import { reactMessageDiscord } from "../send.js";
 import { materializeDiscordInboundJob, type DiscordInboundJob } from "./inbound-job.js";
 import type { RuntimeEnv } from "./message-handler.preflight.types.js";
 import { processDiscordMessage } from "./message-handler.process.js";
+import { resolveDiscordStatusReactionProjection } from "./status-reaction-lifecycle.js";
 import type { DiscordMonitorStatusSink } from "./status.js";
 import { normalizeDiscordInboundWorkerTimeoutMs, runDiscordTaskWithTimeout } from "./timeouts.js";
 
@@ -65,6 +68,25 @@ async function processDiscordInboundJob(params: {
   });
 }
 
+async function maybeShowQueuedBacklogReaction(job: DiscordInboundJob): Promise<void> {
+  if (job.payload.cfg?.messages?.statusReactions?.enabled !== true) {
+    return;
+  }
+
+  const messageId = job.payload.message?.id?.trim();
+  const channelId = job.payload.messageChannelId?.trim();
+  if (!messageId || !channelId) {
+    return;
+  }
+
+  const emoji = resolveDiscordStatusReactionProjection(
+    job.payload.cfg.messages?.statusReactions?.emojis,
+  ).waitingBacklog;
+  await reactMessageDiscord(channelId, messageId, emoji, {
+    rest: job.runtime.client.rest as unknown as RequestClient,
+  });
+}
+
 export function createDiscordInboundWorker(
   params: DiscordInboundWorkerParams,
 ): DiscordInboundWorker {
@@ -73,9 +95,19 @@ export function createDiscordInboundWorker(
     setStatus: params.setStatus,
     abortSignal: params.abortSignal,
   });
+  const queuedRunsByKey = new Map<string, number>();
 
   return {
     enqueue(job) {
+      const existingRuns = queuedRunsByKey.get(job.queueKey) ?? 0;
+      queuedRunsByKey.set(job.queueKey, existingRuns + 1);
+      if (existingRuns > 0) {
+        void maybeShowQueuedBacklogReaction(job).catch((error) => {
+          params.runtime.error?.(
+            danger(`discord queued backlog reaction failed: ${String(error)}`),
+          );
+        });
+      }
       void runQueue
         .enqueue(job.queueKey, async () => {
           if (!runState.isActive()) {
@@ -98,6 +130,14 @@ export function createDiscordInboundWorker(
         })
         .catch((error) => {
           params.runtime.error?.(danger(`discord inbound worker failed: ${String(error)}`));
+        })
+        .finally(() => {
+          const remainingRuns = Math.max(0, (queuedRunsByKey.get(job.queueKey) ?? 1) - 1);
+          if (remainingRuns === 0) {
+            queuedRunsByKey.delete(job.queueKey);
+            return;
+          }
+          queuedRunsByKey.set(job.queueKey, remainingRuns);
         });
     },
     deactivate: runState.deactivate,

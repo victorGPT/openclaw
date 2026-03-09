@@ -7,6 +7,9 @@ import {
 const preflightDiscordMessageMock = vi.hoisted(() => vi.fn());
 const processDiscordMessageMock = vi.hoisted(() => vi.fn());
 const eventualReplyDeliveredMock = vi.hoisted(() => vi.fn());
+const sendMocks = vi.hoisted(() => ({
+  reactMessageDiscord: vi.fn(async () => ({ ok: true })),
+}));
 type SetStatusFn = (patch: Record<string, unknown>) => void;
 
 vi.mock("./message-handler.preflight.js", () => ({
@@ -15,6 +18,10 @@ vi.mock("./message-handler.preflight.js", () => ({
 
 vi.mock("./message-handler.process.js", () => ({
   processDiscordMessage: processDiscordMessageMock,
+}));
+
+vi.mock("../send.js", () => ({
+  reactMessageDiscord: sendMocks.reactMessageDiscord,
 }));
 
 const { createDiscordMessageHandler } = await import("./message-handler.js");
@@ -155,6 +162,72 @@ describe("createDiscordMessageHandler queue behavior", () => {
           busy: false,
         }),
       );
+    });
+  });
+
+  it("shows backlog reaction for queued runs before the second run starts", async () => {
+    preflightDiscordMessageMock.mockReset();
+    processDiscordMessageMock.mockReset();
+    sendMocks.reactMessageDiscord.mockClear();
+
+    const firstRun = createDeferred();
+    processDiscordMessageMock
+      .mockImplementationOnce(async () => {
+        await firstRun.promise;
+      })
+      .mockImplementationOnce(async () => undefined);
+
+    const params = createDiscordHandlerParams();
+    params.cfg.messages = {
+      ...params.cfg.messages,
+      statusReactions: { enabled: true },
+    };
+
+    preflightDiscordMessageMock.mockImplementation(
+      async (contextParams: { data: { channel_id: string; message?: { id?: string } } }) => {
+        const channelId = contextParams.data.channel_id;
+        const messageId = contextParams.data.message?.id ?? `msg-${channelId}`;
+        return {
+          ...createDiscordPreflightContext(channelId),
+          cfg: params.cfg,
+          client: { rest: {} },
+          data: {
+            channel_id: channelId,
+            message: {
+              id: messageId,
+              channel_id: channelId,
+              attachments: [],
+            },
+          },
+          message: {
+            id: messageId,
+            channel_id: channelId,
+            attachments: [],
+          },
+        };
+      },
+    );
+
+    const handler = createDiscordMessageHandler(params);
+    await expect(handler(createMessageData("m-1") as never, {} as never)).resolves.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(processDiscordMessageMock).toHaveBeenCalledTimes(1);
+    });
+
+    await expect(handler(createMessageData("m-2") as never, {} as never)).resolves.toBeUndefined();
+
+    await vi.waitFor(() => {
+      expect(sendMocks.reactMessageDiscord).toHaveBeenCalledWith("ch-1", "m-2", "⏳", {
+        rest: {},
+      });
+    });
+    expect(processDiscordMessageMock).toHaveBeenCalledTimes(1);
+
+    firstRun.resolve();
+    await firstRun.promise;
+
+    await vi.waitFor(() => {
+      expect(processDiscordMessageMock).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -11,7 +11,10 @@ import {
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
 import { createReplyDispatcherWithTyping } from "../../auto-reply/reply/reply-dispatcher.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
-import { shouldAckReaction as shouldAckReactionGate } from "../../channels/ack-reactions.js";
+import {
+  removeAckReactionAfterReply,
+  shouldAckReaction as shouldAckReactionGate,
+} from "../../channels/ack-reactions.js";
 import { logTypingFailure, logAckFailure } from "../../channels/logging.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { recordInboundSession } from "../../channels/session.js";
@@ -159,9 +162,11 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
         shouldBypassMention,
       }),
     );
-  const statusReactionsEnabled = shouldAckReaction();
+  const shouldSendAckReaction = shouldAckReaction();
+  const statusReactionsEnabled = cfg.messages?.statusReactions?.enabled === true;
   let statusQueueClaimed = false;
   let queueTurnPromise: Promise<void> | null = null;
+  let ackReactionPromise: Promise<boolean> | null = null;
   // Discord outbound helpers expect Carbon's request client shape explicitly.
   const discordRest = client.rest as unknown as RequestClient;
   const discordAdapter: DiscordStatusReactionAdapter = {
@@ -176,6 +181,20 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       });
     },
   };
+  if (!statusReactionsEnabled && shouldSendAckReaction && ackReaction) {
+    ackReactionPromise = discordAdapter
+      .setReaction(ackReaction)
+      .then(() => true)
+      .catch((err) => {
+        logAckFailure({
+          log: logVerbose,
+          channel: "discord",
+          target: `${messageChannelId}/${message.id}`,
+          error: err,
+        });
+        return false;
+      });
+  }
   const statusReactions = createDiscordStatusReactionLifecycle({
     enabled: statusReactionsEnabled,
     messageId: message.id,
@@ -822,6 +841,27 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     if (statusQueueClaimed) {
       releaseDiscordStatusReactionQueue(messageChannelId, message.id);
     }
+    removeAckReactionAfterReply({
+      removeAfterReply: cfg.messages?.removeAckAfterReply === true && !statusReactionsEnabled,
+      ackReactionPromise,
+      ackReactionValue: ackReaction ?? null,
+      remove: async () => {
+        if (!ackReaction) {
+          return;
+        }
+        await removeReactionDiscord(messageChannelId, message.id, ackReaction, {
+          rest: discordRest,
+        });
+      },
+      onError: (err) => {
+        logAckFailure({
+          log: logVerbose,
+          channel: "discord",
+          target: `${messageChannelId}/${message.id}`,
+          error: err,
+        });
+      },
+    });
   }
   if (dispatchAborted) {
     return;

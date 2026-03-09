@@ -287,7 +287,15 @@ describe("processDiscordMessage ack reactions", () => {
       return { queuedFinal: false, counts: { final: 0, tool: 0, block: 0 } };
     });
 
-    const ctx = await createBaseContext();
+    const ctx = await createBaseContext({
+      cfg: {
+        messages: {
+          ackReaction: "👀",
+          statusReactions: { enabled: true },
+        },
+        session: { store: "/tmp/openclaw-discord-process-test-sessions.json" },
+      },
+    });
 
     // oxlint-disable-next-line typescript/no-explicit-any
     const run = processDiscordMessage(ctx as any);
@@ -311,7 +319,15 @@ describe("processDiscordMessage ack reactions", () => {
       return { queuedFinal: false, counts: { final: 0, tool: 0, block: 0 } };
     });
 
-    const ctx = await createBaseContext();
+    const ctx = await createBaseContext({
+      cfg: {
+        messages: {
+          ackReaction: "👀",
+          statusReactions: { enabled: true },
+        },
+        session: { store: "/tmp/openclaw-discord-process-test-sessions.json" },
+      },
+    });
 
     // oxlint-disable-next-line typescript/no-explicit-any
     await processDiscordMessage(ctx as any);
@@ -336,6 +352,13 @@ describe("processDiscordMessage ack reactions", () => {
     });
 
     const first = await createBaseContext({
+      cfg: {
+        messages: {
+          ackReaction: "👀",
+          statusReactions: { enabled: true },
+        },
+        session: { store: "/tmp/openclaw-discord-process-test-sessions.json" },
+      },
       message: {
         id: "m1",
         channelId: "c1",
@@ -345,6 +368,13 @@ describe("processDiscordMessage ack reactions", () => {
       messageChannelId: "c1",
     });
     const second = await createBaseContext({
+      cfg: {
+        messages: {
+          ackReaction: "👀",
+          statusReactions: { enabled: true },
+        },
+        session: { store: "/tmp/openclaw-discord-process-test-sessions.json" },
+      },
       message: {
         id: "m2",
         channelId: "c1",
@@ -411,6 +441,7 @@ describe("processDiscordMessage ack reactions", () => {
         messages: {
           ackReaction: "👀",
           statusReactions: {
+            enabled: true,
             emojis: { queued: "🟦", thinking: "🧪", coding: "🖥️" },
             timing: { debounceMs: 0 },
           },
@@ -434,6 +465,29 @@ describe("processDiscordMessage ack reactions", () => {
     expect(emojis).toContain("🟦");
     expect(emojis).toContain("🧪");
     expect(emojis).toContain("🖥️");
+  });
+
+  it("keeps ack-only behavior when messages.statusReactions.enabled=false", async () => {
+    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
+      await params?.replyOptions?.onReasoningStream?.();
+      await params?.replyOptions?.onToolStart?.({ name: "exec" });
+      return { queuedFinal: false, counts: { final: 0, tool: 0, block: 0 } };
+    });
+
+    const ctx = await createBaseContext({
+      cfg: {
+        messages: {
+          ackReaction: "👀",
+          statusReactions: { enabled: false },
+        },
+        session: { store: "/tmp/openclaw-discord-process-test-sessions.json" },
+      },
+    });
+
+    // oxlint-disable-next-line typescript/no-explicit-any
+    await processDiscordMessage(ctx as any);
+
+    expect(getReactionEmojis()).toEqual(["👀"]);
   });
 
   it("clears status reactions when dispatch aborts and removeAckAfterReply is enabled", async () => {
